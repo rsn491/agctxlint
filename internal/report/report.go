@@ -35,20 +35,33 @@ type jsonReport struct {
 	Summary Summary       `json:"summary"`
 }
 
+// Reporter renders lint results to a writer in one of ctxlint's output
+// formats.
+type Reporter struct {
+	W     io.Writer
+	Quiet bool
+}
+
+// NewReporter returns a Reporter writing to w. When quiet is set, warnings
+// are omitted from the rendered output (but still counted in the summary).
+func NewReporter(w io.Writer, quiet bool) *Reporter {
+	return &Reporter{W: w, Quiet: quiet}
+}
+
 // Text groups findings under a header naming their file, so the path is not
 // repeated on every line. Files with nothing to report (or nothing left after
 // quiet filtering) are omitted entirely. A blank line separates file groups
 // and sets the final summary line apart.
-func Text(w io.Writer, results []lint.Result, quiet bool) error {
-	for _, r := range results {
-		findings := r.Findings
-		if quiet {
+func (r *Reporter) Text(results []lint.Result) error {
+	for _, res := range results {
+		findings := res.Findings
+		if r.Quiet {
 			findings = filterErrors(findings)
 		}
 		if len(findings) == 0 {
 			continue
 		}
-		if _, err := fmt.Fprintf(w, "%s\n", r.Path); err != nil {
+		if _, err := fmt.Fprintf(r.W, "%s\n", res.Path); err != nil {
 			return err
 		}
 		for _, f := range findings {
@@ -56,17 +69,17 @@ func Text(w io.Writer, results []lint.Result, quiet bool) error {
 			if f.Line > 0 {
 				location = fmt.Sprintf("%d: ", f.Line)
 			}
-			if _, err := fmt.Fprintf(w, "  %s%s: %s: %s\n", location, f.Severity, f.Rule, f.Message); err != nil {
+			if _, err := fmt.Fprintf(r.W, "  %s%s: %s: %s\n", location, f.Severity, f.Rule, f.Message); err != nil {
 				return err
 			}
 		}
-		if _, err := fmt.Fprintln(w); err != nil {
+		if _, err := fmt.Fprintln(r.W); err != nil {
 			return err
 		}
 	}
 
 	s := Summarize(results)
-	_, err := fmt.Fprintf(w, "%s checked, %s, %s\n",
+	_, err := fmt.Fprintf(r.W, "%s checked, %s, %s\n",
 		plural(s.Files, "file", "files"),
 		plural(s.Errors, "error", "errors"),
 		plural(s.Warnings, "warning", "warnings"))
@@ -75,16 +88,16 @@ func Text(w io.Writer, results []lint.Result, quiet bool) error {
 
 // JSON writes the whole run as a single object, sorted by path upstream so the
 // output diffs cleanly between runs.
-func JSON(w io.Writer, results []lint.Result, quiet bool) error {
+func (r *Reporter) JSON(results []lint.Result) error {
 	files := make([]lint.Result, 0, len(results))
-	for _, r := range results {
-		if quiet {
-			r.Findings = filterErrors(r.Findings)
+	for _, res := range results {
+		if r.Quiet {
+			res.Findings = filterErrors(res.Findings)
 		}
-		files = append(files, r)
+		files = append(files, res)
 	}
 
-	enc := json.NewEncoder(w)
+	enc := json.NewEncoder(r.W)
 	enc.SetIndent("", "  ")
 	return enc.Encode(jsonReport{
 		Version: SchemaVersion,

@@ -48,7 +48,7 @@ func TestSummarize(t *testing.T) {
 
 func TestText(t *testing.T) {
 	var buf bytes.Buffer
-	if err := Text(&buf, results(), false); err != nil {
+	if err := NewReporter(&buf, false).Text(results()); err != nil {
 		t.Fatalf("Text: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
@@ -81,7 +81,7 @@ func TestText(t *testing.T) {
 
 func TestTextQuiet(t *testing.T) {
 	var buf bytes.Buffer
-	if err := Text(&buf, results(), true); err != nil {
+	if err := NewReporter(&buf, true).Text(results()); err != nil {
 		t.Fatalf("Text: %v", err)
 	}
 	if strings.Contains(buf.String(), "warning: ") {
@@ -95,7 +95,7 @@ func TestTextQuiet(t *testing.T) {
 
 func TestTextSingularPlural(t *testing.T) {
 	var buf bytes.Buffer
-	if err := Text(&buf, nil, false); err != nil {
+	if err := NewReporter(&buf, false).Text(nil); err != nil {
 		t.Fatalf("Text: %v", err)
 	}
 	if want := "0 files checked, 0 errors, 0 warnings\n"; buf.String() != want {
@@ -105,7 +105,7 @@ func TestTextSingularPlural(t *testing.T) {
 
 func TestJSON(t *testing.T) {
 	var buf bytes.Buffer
-	if err := JSON(&buf, results(), false); err != nil {
+	if err := NewReporter(&buf, false).JSON(results()); err != nil {
 		t.Fatalf("JSON: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestJSON(t *testing.T) {
 
 func TestJSONQuiet(t *testing.T) {
 	var buf bytes.Buffer
-	if err := JSON(&buf, results(), true); err != nil {
+	if err := NewReporter(&buf, true).JSON(results()); err != nil {
 		t.Fatalf("JSON: %v", err)
 	}
 
@@ -157,7 +157,7 @@ func TestJSONQuiet(t *testing.T) {
 // back into the caller's results, which would corrupt a later text render.
 func TestJSONQuietDoesNotMutateInput(t *testing.T) {
 	in := results()
-	if err := JSON(&bytes.Buffer{}, in, true); err != nil {
+	if err := NewReporter(&bytes.Buffer{}, true).JSON(in); err != nil {
 		t.Fatalf("JSON: %v", err)
 	}
 	if got := Summarize(in); got.Warnings != 1 {

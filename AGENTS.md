@@ -26,8 +26,8 @@ go test ./...
 
 1. Add its id constant in `internal/lint/lint.go` and append it to `Rules`, which
    backs both `--list-rules` and `--disable` validation.
-2. Implement the check, emitting through the `add` closure so `--disable` and
-   `--strict` keep working.
+2. Implement the check, emitting through the `findingCollector`'s `add` method
+   so `--disable` and `--strict` keep working.
 3. Add a case to the table in `internal/lint/lint_test.go` asserting the exact
    rule ids the fixture produces.
 4. Document it in the README's rule table.

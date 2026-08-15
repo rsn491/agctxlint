@@ -81,7 +81,11 @@ func TestFindWalksRecursively(t *testing.T) {
 		"skills/alpha/reference/doc.md": "supporting doc",
 	})
 
-	targets, err := Find([]string{root}, nil)
+	d, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	targets, err := d.Find([]string{root})
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -154,7 +158,11 @@ func TestFindExcludes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			targets, err := Find([]string{root}, tt.excludes)
+			d, err := New(tt.excludes)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			targets, err := d.Find([]string{root})
 			if err != nil {
 				t.Fatalf("Find: %v", err)
 			}
@@ -172,7 +180,11 @@ func TestFindExplicitFile(t *testing.T) {
 		"README.md":            "not an instruction file",
 	})
 
-	targets, err := Find([]string{filepath.Join(root, "nested/deep/SKILL.md")}, nil)
+	d, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	targets, err := d.Find([]string{filepath.Join(root, "nested/deep/SKILL.md")})
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -183,7 +195,7 @@ func TestFindExplicitFile(t *testing.T) {
 	// An explicit file inside a skipped directory is still linted: the skip list
 	// only prunes walks.
 	skipped := tree(t, map[string]string{"node_modules/pkg/SKILL.md": "dependency skill"})
-	targets, err = Find([]string{filepath.Join(skipped, "node_modules/pkg/SKILL.md")}, nil)
+	targets, err = d.Find([]string{filepath.Join(skipped, "node_modules/pkg/SKILL.md")})
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -195,24 +207,29 @@ func TestFindExplicitFile(t *testing.T) {
 func TestFindErrors(t *testing.T) {
 	root := tree(t, map[string]string{"README.md": "not an instruction file"})
 
+	d, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
 	t.Run("unrecognized file name", func(t *testing.T) {
-		_, err := Find([]string{filepath.Join(root, "README.md")}, nil)
+		_, err := d.Find([]string{filepath.Join(root, "README.md")})
 		if err == nil || !strings.Contains(err.Error(), "not an AGENTS.md or SKILL.md") {
 			t.Errorf("Find error = %v, want a complaint about the file name", err)
 		}
 	})
 
 	t.Run("missing path", func(t *testing.T) {
-		_, err := Find([]string{filepath.Join(root, "nope")}, nil)
+		_, err := d.Find([]string{filepath.Join(root, "nope")})
 		if err == nil {
 			t.Error("Find error = nil, want a read failure")
 		}
 	})
 
 	t.Run("invalid exclude glob", func(t *testing.T) {
-		_, err := Find([]string{root}, []string{"["})
+		_, err := New([]string{"["})
 		if err == nil || !strings.Contains(err.Error(), "invalid --exclude") {
-			t.Errorf("Find error = %v, want a complaint about the pattern", err)
+			t.Errorf("New error = %v, want a complaint about the pattern", err)
 		}
 	})
 }
@@ -221,7 +238,11 @@ func TestFindDeduplicates(t *testing.T) {
 	root := tree(t, map[string]string{"AGENTS.md": "root"})
 	file := filepath.Join(root, "AGENTS.md")
 
-	targets, err := Find([]string{root, file, file}, nil)
+	d, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	targets, err := d.Find([]string{root, file, file})
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -233,7 +254,11 @@ func TestFindDeduplicates(t *testing.T) {
 func TestFindEmptyResult(t *testing.T) {
 	root := tree(t, map[string]string{"README.md": "nothing to lint here"})
 
-	targets, err := Find([]string{root}, nil)
+	d, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	targets, err := d.Find([]string{root})
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}

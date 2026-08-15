@@ -53,6 +53,21 @@ func KindFor(path string) (kind Kind, ok bool) {
 	}
 }
 
+// Discoverer collects agent instruction files from the file system, honoring
+// a fixed set of exclude globs validated at construction.
+type Discoverer struct {
+	excludes []string
+}
+
+// New validates excludes and returns a Discoverer that applies them to every
+// subsequent Find call.
+func New(excludes []string) (*Discoverer, error) {
+	if err := validateGlobs(excludes); err != nil {
+		return nil, err
+	}
+	return &Discoverer{excludes: excludes}, nil
+}
+
 // Find collects the files to lint from the given paths. A file argument is
 // taken as-is; a directory is walked recursively. Excludes are shell globs
 // matched against each entry's base name and its path relative to the walk
@@ -60,11 +75,7 @@ func KindFor(path string) (kind Kind, ok bool) {
 //
 // The result is deduplicated by absolute path and sorted, so output is stable
 // across runs and platforms.
-func Find(paths []string, excludes []string) ([]Target, error) {
-	if err := validateGlobs(excludes); err != nil {
-		return nil, err
-	}
-
+func (d *Discoverer) Find(paths []string) ([]Target, error) {
 	seen := make(map[string]bool)
 	var targets []Target
 	add := func(path string, kind Kind) {
@@ -92,7 +103,7 @@ func Find(paths []string, excludes []string) ([]Target, error) {
 			add(path, kind)
 			continue
 		}
-		if err := walk(path, excludes, add); err != nil {
+		if err := d.walk(path, add); err != nil {
 			return nil, err
 		}
 	}
@@ -101,8 +112,8 @@ func Find(paths []string, excludes []string) ([]Target, error) {
 	return targets, nil
 }
 
-func walk(root string, excludes []string, add func(string, Kind)) error {
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+func (d *Discoverer) walk(root string, add func(string, Kind)) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("cannot read %s: %w", path, err)
 		}
@@ -110,17 +121,17 @@ func walk(root string, excludes []string, add func(string, Kind)) error {
 		if relErr != nil {
 			rel = path
 		}
-		if d.IsDir() {
+		if entry.IsDir() {
 			if path == root {
 				return nil
 			}
-			if skipDirs[d.Name()] || matchesAny(excludes, d.Name(), rel) {
+			if skipDirs[entry.Name()] || matchesAny(d.excludes, entry.Name(), rel) {
 				return fs.SkipDir
 			}
 			return nil
 		}
 		kind, ok := KindFor(path)
-		if !ok || matchesAny(excludes, d.Name(), rel) {
+		if !ok || matchesAny(d.excludes, entry.Name(), rel) {
 			return nil
 		}
 		add(path, kind)

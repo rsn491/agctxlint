@@ -193,90 +193,104 @@ func (l *Linter) File(t discover.Target) (Result, error) {
 // Check lints already-read file contents. Findings are ordered by rule so
 // output does not depend on the order the checks happen to run in.
 func (l *Linter) Check(t discover.Target, src []byte) Result {
-	res := Result{Path: t.Path, Kind: t.Kind, Findings: []Finding{}}
+	res := Result{Path: t.Path, Kind: t.Kind}
 
 	fm, body, err := parse.Split(src)
 	res.Tokens.Content = l.counter.Count(body)
 
-	add := func(rule string, sev Severity, line int, format string, args ...any) {
-		if l.disabled[rule] {
-			return
-		}
-		if sev == SeverityWarning && l.cfg.Strict {
-			sev = SeverityError
-		}
-		res.Findings = append(res.Findings, Finding{
-			File:     t.Path,
-			Line:     line,
-			Rule:     rule,
-			Severity: sev,
-			Message:  fmt.Sprintf(format, args...),
-		})
-	}
+	fc := newFindingCollector(t.Path, l.disabled, l.cfg.Strict)
 
 	if t.Kind == discover.KindSkill {
-		l.checkSkill(t, fm, err, add, &res)
+		l.checkSkill(t, fm, err, fc, &res)
 	} else if perr, ok := err.(*parse.Error); ok && perr.Kind == parse.KindUnterminated {
 		// AGENTS.md front matter is optional and unvalidated, but an unclosed
 		// fence means the whole file is being read as front matter.
-		add(RuleFrontmatterUnterminated, SeverityError, perr.Line, "%s", perr.Msg)
+		fc.add(RuleFrontmatterUnterminated, SeverityError, perr.Line, "%s", perr.Msg)
 	}
 
-	l.checkFileReferences(t, fm, body, add)
+	l.checkFileReferences(t, fm, body, fc)
 
 	if limit := l.cfg.contentLimit(t.Kind); limit > 0 && res.Tokens.Content > limit {
-		add(RuleTokensContent, SeverityError, 0,
+		fc.add(RuleTokensContent, SeverityError, 0,
 			"content is %s tokens, over the %s token limit",
 			humanize(res.Tokens.Content), humanize(limit))
 	}
 
+	res.Findings = fc.findings
 	sortFindings(res.Findings)
 	return res
 }
 
-type addFunc func(rule string, sev Severity, line int, format string, args ...any)
+// findingCollector accumulates findings for one file, applying disabled-rule
+// filtering and strict-mode promotion at the point of collection.
+type findingCollector struct {
+	file     string
+	disabled map[string]bool
+	strict   bool
+	findings []Finding
+}
 
-func (l *Linter) checkSkill(t discover.Target, fm parse.Frontmatter, err error, add addFunc, res *Result) {
+func newFindingCollector(file string, disabled map[string]bool, strict bool) *findingCollector {
+	return &findingCollector{file: file, disabled: disabled, strict: strict, findings: []Finding{}}
+}
+
+func (c *findingCollector) add(rule string, sev Severity, line int, format string, args ...any) {
+	if c.disabled[rule] {
+		return
+	}
+	if sev == SeverityWarning && c.strict {
+		sev = SeverityError
+	}
+	c.findings = append(c.findings, Finding{
+		File:     c.file,
+		Line:     line,
+		Rule:     rule,
+		Severity: sev,
+		Message:  fmt.Sprintf(format, args...),
+	})
+}
+
+func (l *Linter) checkSkill(t discover.Target, fm parse.Frontmatter, err error, fc *findingCollector, res *Result) {
 	if err != nil {
 		perr, ok := err.(*parse.Error)
 		if !ok {
-			add(RuleFrontmatterInvalid, SeverityError, 0, "%s", err.Error())
+			fc.add(RuleFrontmatterInvalid, SeverityError, 0, "%s", err.Error())
 			return
 		}
 		switch perr.Kind {
 		case parse.KindNotFirst:
-			add(RuleFrontmatterNotFirst, SeverityError, perr.Line, "%s", perr.Msg)
+			fc.add(RuleFrontmatterNotFirst, SeverityError, perr.Line, "%s", perr.Msg)
 		case parse.KindUnterminated:
-			add(RuleFrontmatterUnterminated, SeverityError, perr.Line, "%s", perr.Msg)
+			fc.add(RuleFrontmatterUnterminated, SeverityError, perr.Line, "%s", perr.Msg)
 		default:
-			add(RuleFrontmatterInvalid, SeverityError, perr.Line, "%s", perr.Msg)
+			fc.add(RuleFrontmatterInvalid, SeverityError, perr.Line, "%s", perr.Msg)
 		}
 		return
 	}
 	if !fm.Present {
-		add(RuleFrontmatterMissing, SeverityError, 1,
+		fc.add(RuleFrontmatterMissing, SeverityError, 1,
 			"missing YAML front matter: a skill must open with a --- fenced block declaring name and description")
 		return
 	}
 
 	for _, key := range fm.Keys() {
 		if !knownKeys[key] {
-			add(RuleFrontmatterUnknownKey, SeverityWarning, fm.Line(key),
+			fc.add(RuleFrontmatterUnknownKey, SeverityWarning, fm.Line(key),
 				"unknown front-matter key %q", key)
 		}
 	}
 
-	l.checkName(t, fm, add, res)
-	l.checkDescription(fm, add, res)
-	l.checkAllowedTools(fm, add)
-	l.checkMetadata(fm, add)
+	l.checkName(t, fm, fc, res)
+	l.checkDescription(fm, fc, res)
+	l.checkAllowedTools(fm, fc)
+	l.checkMetadata(fm, fc)
 }
 
-func (l *Linter) checkName(t discover.Target, fm parse.Frontmatter, add addFunc, res *Result) {
+func (l *Linter) checkName(t discover.Target, fm parse.Frontmatter, fc *findingCollector, res *Result) {
 	name, ok := fm.String("name")
 	name = strings.TrimSpace(name)
 	if !ok || name == "" {
-		add(RuleNameRequired, SeverityError, fm.Line("name"),
+		fc.add(RuleNameRequired, SeverityError, fm.Line("name"),
 			"front matter must declare a non-empty string name")
 		return
 	}
@@ -284,29 +298,29 @@ func (l *Linter) checkName(t discover.Target, fm parse.Frontmatter, add addFunc,
 	line := fm.Line("name")
 
 	if !nameRE.MatchString(name) {
-		add(RuleNameFormat, SeverityError, line,
+		fc.add(RuleNameFormat, SeverityError, line,
 			"name %q must be lowercase letters, digits and single hyphens (for example my-skill)", name)
 	}
 	if n := len([]rune(name)); n > MaxNameChars {
-		add(RuleNameLength, SeverityError, line,
+		fc.add(RuleNameLength, SeverityError, line,
 			"name is %d characters, over the %d character limit", n, MaxNameChars)
 	}
 	if dir := skillDir(t.Path); dir != "" && dir != name {
-		add(RuleNameDirMismatch, SeverityWarning, line,
+		fc.add(RuleNameDirMismatch, SeverityWarning, line,
 			"name %q does not match its directory %q", name, dir)
 	}
 	if l.cfg.MaxSkillNameTokens > 0 && res.Tokens.Name > l.cfg.MaxSkillNameTokens {
-		add(RuleTokensName, SeverityError, line,
+		fc.add(RuleTokensName, SeverityError, line,
 			"name is %s tokens, over the %s token limit",
 			humanize(res.Tokens.Name), humanize(l.cfg.MaxSkillNameTokens))
 	}
 }
 
-func (l *Linter) checkDescription(fm parse.Frontmatter, add addFunc, res *Result) {
+func (l *Linter) checkDescription(fm parse.Frontmatter, fc *findingCollector, res *Result) {
 	desc, ok := fm.String("description")
 	desc = strings.TrimSpace(desc)
 	if !ok || desc == "" {
-		add(RuleDescriptionRequired, SeverityError, fm.Line("description"),
+		fc.add(RuleDescriptionRequired, SeverityError, fm.Line("description"),
 			"front matter must declare a non-empty string description saying when to use the skill")
 		return
 	}
@@ -314,34 +328,34 @@ func (l *Linter) checkDescription(fm parse.Frontmatter, add addFunc, res *Result
 	line := fm.Line("description")
 
 	if n := len([]rune(desc)); n > MaxDescriptionChars {
-		add(RuleDescriptionLength, SeverityError, line,
+		fc.add(RuleDescriptionLength, SeverityError, line,
 			"description is %s characters, over the %s character limit",
 			humanize(n), humanize(MaxDescriptionChars))
 	}
 	if l.cfg.MaxSkillDescriptionTokens > 0 && res.Tokens.Description > l.cfg.MaxSkillDescriptionTokens {
-		add(RuleTokensDescription, SeverityError, line,
+		fc.add(RuleTokensDescription, SeverityError, line,
 			"description is %s tokens, over the %s token limit",
 			humanize(res.Tokens.Description), humanize(l.cfg.MaxSkillDescriptionTokens))
 	}
 }
 
-func (l *Linter) checkAllowedTools(fm parse.Frontmatter, add addFunc) {
+func (l *Linter) checkAllowedTools(fm parse.Frontmatter, fc *findingCollector) {
 	if !fm.Has("allowed-tools") {
 		return
 	}
 	if _, ok := fm.StringSlice("allowed-tools"); !ok {
-		add(RuleAllowedToolsType, SeverityError, fm.Line("allowed-tools"),
+		fc.add(RuleAllowedToolsType, SeverityError, fm.Line("allowed-tools"),
 			"allowed-tools must be a list of tool names or a comma-separated string")
 	}
 }
 
-func (l *Linter) checkMetadata(fm parse.Frontmatter, add addFunc) {
+func (l *Linter) checkMetadata(fm parse.Frontmatter, fc *findingCollector) {
 	node := fm.Node("metadata")
 	if node == nil {
 		return
 	}
 	if node.Kind != yaml.MappingNode {
-		add(RuleMetadataType, SeverityError, fm.Line("metadata"),
+		fc.add(RuleMetadataType, SeverityError, fm.Line("metadata"),
 			"metadata must be a mapping of keys to values")
 	}
 }
@@ -350,7 +364,7 @@ func (l *Linter) checkMetadata(fm parse.Frontmatter, add addFunc) {
 // file but does not resolve to one, relative to the linted file's directory.
 // It applies to both AGENTS.md and SKILL.md, since a dangling reference breaks
 // the file's contract with the runtime regardless of kind.
-func (l *Linter) checkFileReferences(t discover.Target, fm parse.Frontmatter, body string, add addFunc) {
+func (l *Linter) checkFileReferences(t discover.Target, fm parse.Frontmatter, body string, fc *findingCollector) {
 	dir := filepath.Dir(t.Path)
 	offset := 0
 	if fm.Present {
@@ -373,7 +387,7 @@ func (l *Linter) checkFileReferences(t discover.Target, fm parse.Frontmatter, bo
 				continue
 			}
 			if _, err := os.Stat(filepath.Join(dir, target)); err != nil {
-				add(RuleFileReferenceMissing, SeverityError, offset+i+1,
+				fc.add(RuleFileReferenceMissing, SeverityError, offset+i+1,
 					"referenced file %q does not exist", target)
 			}
 		}

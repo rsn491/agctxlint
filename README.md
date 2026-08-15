@@ -44,10 +44,10 @@ ctxlint --strict --format json .
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--max-agents-tokens` | `5000` | Body token budget for `AGENTS.md` |
+| `--max-agents-tokens` | `2000` | Body token budget for `AGENTS.md` (roughly Anthropic's ~200-line guidance) |
 | `--max-skill-tokens` | `5000` | Body token budget for `SKILL.md` |
 | `--max-skill-name-tokens` | `16` | Budget for a skill's `name` |
-| `--max-skill-description-tokens` | `84` | Budget for a skill's `description` |
+| `--max-skill-description-tokens` | `100` | Budget for a skill's `description` |
 | `--exclude` | — | Glob of paths to skip; repeatable |
 | `--disable` | — | Rule id to skip; repeatable |
 | `--strict` | `false` | Treat warnings as errors |

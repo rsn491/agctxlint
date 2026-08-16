@@ -9,7 +9,15 @@ mod report;
 mod tokens;
 
 fn main() {
+    use std::io::IsTerminal;
+
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let code = cli::run(&args, &mut std::io::stdout(), &mut std::io::stderr());
+    let is_terminal = std::io::stdout().is_terminal();
+    let code = cli::run(
+        &args,
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+        is_terminal,
+    );
     std::process::exit(code);
 }

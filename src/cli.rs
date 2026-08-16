@@ -1,6 +1,6 @@
 //! Wires flags, discovery, linting and reporting together.
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 
 use crate::discover;
 use crate::lint::{self, Config};
@@ -195,8 +195,17 @@ fn parse_bool_inline(inline: Option<&str>) -> bool {
 }
 
 /// Executes ctxlint and returns the process exit code. Findings go to stdout;
-/// usage and I/O problems go to stderr.
-pub fn run(args: &[String], stdout: &mut impl Write, stderr: &mut impl Write) -> i32 {
+/// usage and I/O problems go to stderr. `is_terminal` decides whether
+/// `--color auto` colorizes output; callers pass whether their real stdout
+/// is a terminal rather than this function inspecting the process's actual
+/// file descriptors, so tests can pin the "auto" behavior instead of it
+/// depending on however the test binary's stdout happens to be attached.
+pub fn run(
+    args: &[String],
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    is_terminal: bool,
+) -> i32 {
     let f = match parse_args(args) {
         ParseOutcome::Flags(f) => f,
         ParseOutcome::Help => {
@@ -282,7 +291,12 @@ pub fn run(args: &[String], stdout: &mut impl Write, stderr: &mut impl Write) ->
     let write_result = if f.format == "json" {
         report::json(stdout, &results, f.quiet)
     } else {
-        report::text(stdout, &results, f.quiet, resolve_color(&f.color))
+        report::text(
+            stdout,
+            &results,
+            f.quiet,
+            resolve_color(&f.color, is_terminal),
+        )
     };
     if let Err(e) = write_result {
         let _ = writeln!(stderr, "ctxlint: {e}");
@@ -299,10 +313,8 @@ pub fn run(args: &[String], stdout: &mut impl Write, stderr: &mut impl Write) ->
 /// Decides whether text output gets colorized and decorated with symbols.
 /// `--color=always`/`never` are absolute; `auto` (the default) follows the
 /// [`NO_COLOR`](https://no-color.org) and `CLICOLOR_FORCE` conventions and
-/// otherwise colors only when stdout is a terminal. This checks the real
-/// process stdout rather than the `stdout` writer `run` was given, since a
-/// test harness's in-memory buffer says nothing about the actual terminal.
-fn resolve_color(choice: &str) -> bool {
+/// otherwise colors only when the caller's stdout is a terminal.
+fn resolve_color(choice: &str, is_terminal: bool) -> bool {
     match choice {
         "always" => return true,
         "never" => return false,
@@ -314,7 +326,7 @@ fn resolve_color(choice: &str) -> bool {
     if std::env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0") {
         return true;
     }
-    std::io::stdout().is_terminal()
+    is_terminal
 }
 
 /// Rejects typos in `--disable` rather than silently doing nothing.
@@ -386,7 +398,7 @@ mod tests {
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run(&args, &mut out, &mut err);
+        let code = run(&args, &mut out, &mut err, false);
         (
             code,
             String::from_utf8(out).unwrap(),
@@ -587,8 +599,8 @@ mod tests {
     fn color_flag_controls_decoration() {
         let skill = fixture(&["broken", "bad-name", "SKILL.md"]);
 
-        // The test harness's stdout is a buffer, not a real terminal, so
-        // "auto" (the default) stays plain here.
+        // run_args passes is_terminal=false, so "auto" (the default) stays
+        // plain here.
         let (_, stdout, _) = run_args(&[&skill]);
         assert!(!stdout.contains('\u{1b}'), "{stdout}");
 

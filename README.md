@@ -102,3 +102,10 @@ Format and lint:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
+
+Pre-commit hooks run `fmt`, `clippy`, `check`, `test`, and ctxlint's own self-lint
+automatically. To install them:
+```sh
+pip install pre-commit
+pre-commit install
+```

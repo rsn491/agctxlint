@@ -11,7 +11,7 @@ Features:
 
 Install:
 ```sh
-cargo install --path .
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rsn491/ctxlint/releases/latest/download/ctxlint-installer.sh | sh
 ```
 
 Run in your repo:

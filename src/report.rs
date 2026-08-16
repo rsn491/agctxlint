@@ -11,19 +11,25 @@ pub const SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Summary {
     pub files: usize,
-    pub errors: usize,
-    pub warnings: usize,
+    pub files_with_errors: usize,
+    pub files_with_warnings: usize,
 }
 
-/// Totals the findings across results.
+/// Counts, across results, how many files have at least one error or
+/// warning. Mirrors other linters' summaries, which report the files
+/// affected rather than a raw finding tally.
 pub fn summarize(results: &[FileResult]) -> Summary {
     let mut s = Summary {
         files: results.len(),
         ..Default::default()
     };
     for r in results {
-        s.errors += r.errors();
-        s.warnings += r.warnings();
+        if r.errors() > 0 {
+            s.files_with_errors += 1;
+        }
+        if r.warnings() > 0 {
+            s.files_with_warnings += 1;
+        }
     }
     s
 }
@@ -68,8 +74,12 @@ pub fn text(w: &mut impl Write, results: &[FileResult], quiet: bool) -> io::Resu
         w,
         "{} checked, {}, {}",
         plural(s.files, "file", "files"),
-        plural(s.errors, "error", "errors"),
-        plural(s.warnings, "warning", "warnings")
+        plural(s.files_with_errors, "file with errors", "files with errors"),
+        plural(
+            s.files_with_warnings,
+            "file with warnings",
+            "files with warnings"
+        )
     )?;
     Ok(())
 }
@@ -168,8 +178,8 @@ mod tests {
             summarize(&results()),
             Summary {
                 files: 2,
-                errors: 1,
-                warnings: 1
+                files_with_errors: 1,
+                files_with_warnings: 1
             }
         );
     }
@@ -195,7 +205,10 @@ mod tests {
             lines[4]
         );
         assert_eq!(lines[5], "");
-        assert_eq!(lines[6], "2 files checked, 1 error, 1 warning");
+        assert_eq!(
+            lines[6],
+            "2 files checked, 1 file with errors, 1 file with warnings"
+        );
     }
 
     #[test]
@@ -204,7 +217,7 @@ mod tests {
         text(&mut buf, &results(), true).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(!out.contains("warning: "));
-        assert!(out.contains("1 warning"));
+        assert!(out.contains("1 file with warnings"));
     }
 
     #[test]
@@ -213,7 +226,7 @@ mod tests {
         text(&mut buf, &[], false).unwrap();
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "0 files checked, 0 errors, 0 warnings\n"
+            "0 files checked, 0 files with errors, 0 files with warnings\n"
         );
     }
 
@@ -225,8 +238,8 @@ mod tests {
         assert_eq!(got["version"], SCHEMA_VERSION);
         assert_eq!(got["files"].as_array().unwrap().len(), 2);
         assert_eq!(got["summary"]["files"], 2);
-        assert_eq!(got["summary"]["errors"], 1);
-        assert_eq!(got["summary"]["warnings"], 1);
+        assert_eq!(got["summary"]["files_with_errors"], 1);
+        assert_eq!(got["summary"]["files_with_warnings"], 1);
         assert_eq!(got["files"][1]["tokens"]["name"], 2);
         assert!(!String::from_utf8(buf).unwrap().contains("\"line\": 0"));
     }
@@ -241,7 +254,7 @@ mod tests {
                 assert_ne!(finding["severity"], "warning");
             }
         }
-        assert_eq!(got["summary"]["warnings"], 1);
+        assert_eq!(got["summary"]["files_with_warnings"], 1);
     }
 
     #[test]
@@ -249,6 +262,6 @@ mod tests {
         let input = results();
         let mut buf = Vec::new();
         json(&mut buf, &input, true).unwrap();
-        assert_eq!(summarize(&input).warnings, 1);
+        assert_eq!(summarize(&input).files_with_warnings, 1);
     }
 }

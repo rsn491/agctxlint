@@ -278,7 +278,7 @@ pub fn run(args: &[String], stdout: &mut impl Write, stderr: &mut impl Write) ->
         return EXIT_USAGE;
     }
 
-    if report::summarize(&results).errors > 0 {
+    if report::summarize(&results).files_with_errors > 0 {
         EXIT_FINDINGS
     } else {
         EXIT_OK
@@ -366,7 +366,7 @@ mod tests {
         let (code, stdout, stderr) = run_args(&[&fixture(&["clean"])]);
         assert_eq!(code, EXIT_OK, "stdout: {stdout} stderr: {stderr}");
         assert!(
-            stdout.contains("2 files checked, 0 errors, 0 warnings"),
+            stdout.contains("2 files checked, 0 files with errors, 0 files with warnings"),
             "{stdout}"
         );
     }
@@ -423,7 +423,7 @@ mod tests {
         assert_eq!(got["version"], report::SCHEMA_VERSION);
         let files = got["files"].as_array().unwrap();
         assert_eq!(got["summary"]["files"], files.len() as u64);
-        assert!(got["summary"]["errors"].as_u64().unwrap() > 0);
+        assert!(got["summary"]["files_with_errors"].as_u64().unwrap() > 0);
 
         let mut paths = Vec::new();
         for file in files {
@@ -547,7 +547,7 @@ mod tests {
         let (_, stdout, _) = run_args(&["--quiet", "--format", "json", &skill]);
         assert!(!stdout.contains(lint::RULE_NAME_DIR_MISMATCH));
         let got: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-        assert!(got["summary"]["warnings"].as_u64().unwrap() > 0);
+        assert!(got["summary"]["files_with_warnings"].as_u64().unwrap() > 0);
     }
 
     #[test]

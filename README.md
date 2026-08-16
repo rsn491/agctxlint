@@ -44,7 +44,7 @@ ctxlint --strict --format json .
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--max-agents-tokens` | `5000` | Body token budget for `AGENTS.md` |
+| `--max-agents-tokens` | `2500` | Body token budget for `AGENTS.md` |
 | `--max-skill-tokens` | `5000` | Body token budget for `SKILL.md` |
 | `--max-skill-name-tokens` | `16` | Budget for a skill's `name` |
 | `--max-skill-description-tokens` | `100` | Budget for a skill's `description` |

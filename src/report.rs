@@ -41,11 +41,40 @@ struct JsonReport<'a> {
     summary: Summary,
 }
 
+const RED: &str = "\x1b[31m";
+const YELLOW: &str = "\x1b[33m";
+const GREEN: &str = "\x1b[32m";
+const BOLD: &str = "\x1b[1m";
+const RESET: &str = "\x1b[0m";
+
+const ERROR_EMOJI: &str = "\u{274c}"; // ❌
+const WARNING_EMOJI: &str = "\u{26a0}\u{fe0f}"; // ⚠️
+const OK_EMOJI: &str = "\u{2705}"; // ✅
+
+/// Wraps `s` in an SGR color code when `color` is set; otherwise returns it
+/// unchanged.
+fn paint(color: bool, code: &str, s: &str) -> String {
+    if color {
+        format!("{code}{s}{RESET}")
+    } else {
+        s.to_string()
+    }
+}
+
 /// Groups findings under a header naming their file, so the path is not
 /// repeated on every line. Files with nothing to report (or nothing left
 /// after quiet filtering) are omitted entirely. A blank line separates file
 /// groups and sets the final summary line apart.
-pub fn text(w: &mut impl Write, results: &[FileResult], quiet: bool) -> io::Result<()> {
+///
+/// When `color` is set, severities are colorized and prefixed with a symbol;
+/// otherwise the output is plain text, unchanged from earlier versions so it
+/// stays friendly to grep and diffing.
+pub fn text(
+    w: &mut impl Write,
+    results: &[FileResult],
+    quiet: bool,
+    color: bool,
+) -> io::Result<()> {
     for r in results {
         let owned;
         let findings: &[Finding] = if quiet {
@@ -57,30 +86,72 @@ pub fn text(w: &mut impl Write, results: &[FileResult], quiet: bool) -> io::Resu
         if findings.is_empty() {
             continue;
         }
-        writeln!(w, "{}", r.path)?;
+        writeln!(w, "{}", paint(color, BOLD, &r.path))?;
         for f in findings {
             let location = if f.line > 0 {
                 format!("{}: ", f.line)
             } else {
                 String::new()
             };
-            writeln!(w, "  {location}{}: {}: {}", f.severity, f.rule, f.message)?;
+            let (emoji, code) = match f.severity {
+                Severity::Error => (ERROR_EMOJI, RED),
+                Severity::Warning => (WARNING_EMOJI, YELLOW),
+            };
+            let severity = paint(color, code, &f.severity.to_string());
+            if color {
+                writeln!(
+                    w,
+                    "  {location}{emoji} {severity}: {}: {}",
+                    f.rule, f.message
+                )?;
+            } else {
+                writeln!(w, "  {location}{severity}: {}: {}", f.rule, f.message)?;
+            }
         }
         writeln!(w)?;
     }
 
     let s = summarize(results);
-    writeln!(
-        w,
-        "{} checked, {}, {}",
-        plural(s.files, "file", "files"),
-        plural(s.files_with_errors, "file with errors", "files with errors"),
-        plural(
-            s.files_with_warnings,
-            "file with warnings",
-            "files with warnings"
-        )
-    )?;
+    let errors = plural(s.files_with_errors, "file with errors", "files with errors");
+    let warnings = plural(
+        s.files_with_warnings,
+        "file with warnings",
+        "files with warnings",
+    );
+    let errors = if s.files_with_errors > 0 {
+        paint(color, RED, &errors)
+    } else {
+        errors
+    };
+    let warnings = if s.files_with_warnings > 0 {
+        paint(color, YELLOW, &warnings)
+    } else {
+        warnings
+    };
+
+    if color {
+        let clean = s.files_with_errors == 0 && s.files_with_warnings == 0;
+        let status = if s.files_with_errors > 0 {
+            ERROR_EMOJI
+        } else if s.files_with_warnings > 0 {
+            WARNING_EMOJI
+        } else {
+            OK_EMOJI
+        };
+        let checked = plural(s.files, "file", "files");
+        let checked = if clean {
+            paint(color, GREEN, &checked)
+        } else {
+            checked
+        };
+        writeln!(w, "{status} {checked} checked, {errors}, {warnings}")?;
+    } else {
+        writeln!(
+            w,
+            "{} checked, {errors}, {warnings}",
+            plural(s.files, "file", "files")
+        )?;
+    }
     Ok(())
 }
 
@@ -187,7 +258,7 @@ mod tests {
     #[test]
     fn text_output_shape() {
         let mut buf = Vec::new();
-        text(&mut buf, &results(), false).unwrap();
+        text(&mut buf, &results(), false, false).unwrap();
         let out = String::from_utf8(buf).unwrap();
         let lines: Vec<&str> = out.trim_end_matches('\n').split('\n').collect();
         assert_eq!(lines.len(), 7, "{out}");
@@ -214,7 +285,7 @@ mod tests {
     #[test]
     fn text_quiet_suppresses_warnings() {
         let mut buf = Vec::new();
-        text(&mut buf, &results(), true).unwrap();
+        text(&mut buf, &results(), true, false).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(!out.contains("warning: "));
         assert!(out.contains("1 file with warnings"));
@@ -223,11 +294,37 @@ mod tests {
     #[test]
     fn text_singular_plural() {
         let mut buf = Vec::new();
-        text(&mut buf, &[], false).unwrap();
+        text(&mut buf, &[], false, false).unwrap();
         assert_eq!(
             String::from_utf8(buf).unwrap(),
             "0 files checked, 0 files with errors, 0 files with warnings\n"
         );
+    }
+
+    #[test]
+    fn text_color_adds_symbols_and_sgr_codes() {
+        let mut buf = Vec::new();
+        text(&mut buf, &results(), false, true).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains(ERROR_EMOJI), "{out}");
+        assert!(out.contains(WARNING_EMOJI), "{out}");
+        assert!(out.contains(RED), "{out}");
+        assert!(out.contains(YELLOW), "{out}");
+        assert!(out.contains(BOLD), "{out}");
+        assert!(out.contains(RESET), "{out}");
+        assert!(out.contains("error"), "{out}");
+        assert!(out.contains("warning"), "{out}");
+    }
+
+    #[test]
+    fn text_color_clean_run_shows_ok_emoji_and_green_count() {
+        let mut buf = Vec::new();
+        text(&mut buf, &[], false, true).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.starts_with(OK_EMOJI), "{out}");
+        assert!(out.contains(GREEN), "{out}");
+        assert!(!out.contains(RED), "{out}");
+        assert!(!out.contains(YELLOW), "{out}");
     }
 
     #[test]

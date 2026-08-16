@@ -1,6 +1,6 @@
 //! Wires flags, discovery, linting and reporting together.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use crate::discover;
 use crate::lint::{self, Config};
@@ -27,6 +27,7 @@ struct Flags {
     max_skill_name_tokens: i64,
     max_skill_description_tokens: i64,
     format: String,
+    color: String,
     strict: bool,
     quiet: bool,
     show_version: bool,
@@ -44,6 +45,7 @@ impl Default for Flags {
             max_skill_name_tokens: DEFAULT_MAX_SKILL_NAME_TOKENS,
             max_skill_description_tokens: DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS,
             format: "text".to_string(),
+            color: "auto".to_string(),
             strict: false,
             quiet: false,
             show_version: false,
@@ -152,6 +154,7 @@ fn parse_args(args: &[String]) -> ParseOutcome {
                 f.max_skill_description_tokens = parse_int!("max-skill-description-tokens", raw);
             }
             "format" => f.format = next_value!("format", inline),
+            "color" => f.color = next_value!("color", inline),
             "exclude" => {
                 let v = next_value!("exclude", inline);
                 if v.is_empty() {
@@ -226,6 +229,14 @@ pub fn run(args: &[String], stdout: &mut impl Write, stderr: &mut impl Write) ->
         );
         return EXIT_USAGE;
     }
+    if f.color != "auto" && f.color != "always" && f.color != "never" {
+        let _ = writeln!(
+            stderr,
+            "ctxlint: unknown --color {:?}: want auto, always, or never",
+            f.color
+        );
+        return EXIT_USAGE;
+    }
     if let Err(msg) = check_rule_names(&f.disabled) {
         let _ = writeln!(stderr, "ctxlint: {msg}");
         return EXIT_USAGE;
@@ -271,7 +282,7 @@ pub fn run(args: &[String], stdout: &mut impl Write, stderr: &mut impl Write) ->
     let write_result = if f.format == "json" {
         report::json(stdout, &results, f.quiet)
     } else {
-        report::text(stdout, &results, f.quiet)
+        report::text(stdout, &results, f.quiet, resolve_color(&f.color))
     };
     if let Err(e) = write_result {
         let _ = writeln!(stderr, "ctxlint: {e}");
@@ -283,6 +294,27 @@ pub fn run(args: &[String], stdout: &mut impl Write, stderr: &mut impl Write) ->
     } else {
         EXIT_OK
     }
+}
+
+/// Decides whether text output gets colorized and decorated with symbols.
+/// `--color=always`/`never` are absolute; `auto` (the default) follows the
+/// [`NO_COLOR`](https://no-color.org) and `CLICOLOR_FORCE` conventions and
+/// otherwise colors only when stdout is a terminal. This checks the real
+/// process stdout rather than the `stdout` writer `run` was given, since a
+/// test harness's in-memory buffer says nothing about the actual terminal.
+fn resolve_color(choice: &str) -> bool {
+    match choice {
+        "always" => return true,
+        "never" => return false,
+        _ => {}
+    }
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    if std::env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0") {
+        return true;
+    }
+    std::io::stdout().is_terminal()
 }
 
 /// Rejects typos in `--disable` rather than silently doing nothing.
@@ -330,6 +362,7 @@ Flags:
   --strict                              treat warnings as errors
   --quiet                               report errors only
   --format text|json                    output format (default "text")
+  --color auto|always|never             colorize and decorate text output (default "auto")
   --list-rules                          print every rule id and exit
   --version                             print the version and exit
 "#
@@ -548,6 +581,30 @@ mod tests {
         assert!(!stdout.contains(lint::RULE_NAME_DIR_MISMATCH));
         let got: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         assert!(got["summary"]["files_with_warnings"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn color_flag_controls_decoration() {
+        let skill = fixture(&["broken", "bad-name", "SKILL.md"]);
+
+        // The test harness's stdout is a buffer, not a real terminal, so
+        // "auto" (the default) stays plain here.
+        let (_, stdout, _) = run_args(&[&skill]);
+        assert!(!stdout.contains('\u{1b}'), "{stdout}");
+
+        let (_, stdout, _) = run_args(&["--color", "always", &skill]);
+        assert!(stdout.contains('\u{1b}'), "{stdout}");
+        assert!(
+            stdout.contains("\u{274c}") || stdout.contains("\u{26a0}"),
+            "{stdout}"
+        );
+
+        let (_, stdout, _) = run_args(&["--color", "never", &skill]);
+        assert!(!stdout.contains('\u{1b}'), "{stdout}");
+
+        let (code, stdout, stderr) = run_args(&["--color", "rainbow", &skill]);
+        assert_eq!(code, EXIT_USAGE, "stdout={stdout} stderr={stderr}");
+        assert!(stderr.contains("unknown --color"), "{stderr}");
     }
 
     #[test]

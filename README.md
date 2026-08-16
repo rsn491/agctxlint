@@ -48,13 +48,6 @@ ctxlint --strict --format json .
 | `--max-skill-tokens` | `5000` | Body token budget for `SKILL.md` |
 | `--max-skill-name-tokens` | `16` | Budget for a skill's `name` |
 | `--max-skill-description-tokens` | `100` | Budget for a skill's `description` |
-| `--exclude` | — | Glob of paths to skip; repeatable |
-| `--disable` | — | Rule id to skip; repeatable |
-| `--strict` | `false` | Treat warnings as errors |
-| `--quiet` | `false` | Report errors only (the summary still counts warnings) |
-| `--format` | `text` | `text` or `json` |
-| `--list-rules` | — | Print every rule id and exit |
-| `--version` | — | Print the version and exit |
 
 ### Rules
 

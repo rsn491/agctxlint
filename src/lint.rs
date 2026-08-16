@@ -258,15 +258,15 @@ impl Linter {
 
             if t.kind == Kind::Skill {
                 self.check_skill(t, &fm, err.as_ref(), &mut r, &mut tokens);
-            } else if let Some(e) = &err {
-                if e.kind == ErrKind::Unterminated {
-                    r.add(
-                        RULE_FRONTMATTER_UNTERMINATED,
-                        Severity::Error,
-                        e.line,
-                        e.msg.clone(),
-                    );
-                }
+            } else if let Some(e) = &err
+                && e.kind == ErrKind::Unterminated
+            {
+                r.add(
+                    RULE_FRONTMATTER_UNTERMINATED,
+                    Severity::Error,
+                    e.line,
+                    e.msg.clone(),
+                );
             }
 
             self.check_file_references(t, &fm, &body, &mut r);
@@ -387,15 +387,15 @@ impl Linter {
                 format!("name is {n} characters, over the {MAX_NAME_CHARS} character limit"),
             );
         }
-        if let Some(dir) = skill_dir(&t.path) {
-            if dir != name {
-                r.add(
-                    RULE_NAME_DIR_MISMATCH,
-                    Severity::Warning,
-                    line,
-                    format!("name {name:?} does not match its directory {dir:?}"),
-                );
-            }
+        if let Some(dir) = skill_dir(&t.path)
+            && dir != name
+        {
+            r.add(
+                RULE_NAME_DIR_MISMATCH,
+                Severity::Warning,
+                line,
+                format!("name {name:?} does not match its directory {dir:?}"),
+            );
         }
         if self.cfg.max_skill_name_tokens > 0 && tokens.name as i64 > self.cfg.max_skill_name_tokens
         {
@@ -509,10 +509,10 @@ impl Linter {
                 }
             }
             for caps in CODE_SPAN_RE.captures_iter(line) {
-                if let Some(target) = code_span_target_path(&caps[1]) {
-                    if !targets.contains(&target) {
-                        targets.push(target);
-                    }
+                if let Some(target) = code_span_target_path(&caps[1])
+                    && !targets.contains(&target)
+                {
+                    targets.push(target);
                 }
             }
             for target in targets {
@@ -534,10 +534,10 @@ impl Linter {
 /// anchor, an absolute path, or a templated placeholder.
 fn link_target_path(raw: &str) -> Option<String> {
     let mut target = raw.trim().to_string();
-    if let Some(rest) = target.strip_prefix('<') {
-        if let Some(end) = rest.find('>') {
-            target = rest[..end].to_string();
-        }
+    if let Some(rest) = target.strip_prefix('<')
+        && let Some(end) = rest.find('>')
+    {
+        target = rest[..end].to_string();
     }
     if let Some(sp) = target.find([' ', '\t']) {
         target.truncate(sp);
@@ -577,9 +577,7 @@ fn code_span_target_path(raw: &str) -> Option<String> {
         return None;
     }
     let last_seg = target.rsplit('/').next().unwrap_or(target);
-    let Some((_, ext)) = last_seg.rsplit_once('.') else {
-        return None;
-    };
+    let (_, ext) = last_seg.rsplit_once('.')?;
     if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
         return None;
     }
@@ -592,10 +590,10 @@ fn code_span_target_path(raw: &str) -> Option<String> {
 fn skill_dir(path: &str) -> Option<String> {
     let abs = abs_path(Path::new(path));
     let dir = abs.parent()?.to_path_buf();
-    if let Ok(cwd) = std::env::current_dir() {
-        if dir == clean_path(&cwd) {
-            return None;
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && dir == clean_path(&cwd)
+    {
+        return None;
     }
     dir.file_name()?.to_str().map(str::to_string)
 }

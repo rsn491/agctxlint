@@ -9,7 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  pre-commit:
+    name: Pre-commit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,17 +21,4 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: rustfmt
-        run: cargo fmt --check
-
-      - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: test
-        run: cargo test
-
-      - name: build
-        run: cargo build --release
-
-      - name: lint this repository's own instruction files
-        run: ./target/release/ctxlint --strict --exclude testdata .
+      - uses: pre-commit/action@v3.0.1

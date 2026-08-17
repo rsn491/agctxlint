@@ -216,18 +216,31 @@ pub struct Linter {
     cfg: Config,
     counter: Box<dyn Counter>,
     disabled: HashSet<String>,
+    /// Resolved once, at construction. Rules read this instead of calling
+    /// `std::env::current_dir` themselves, so a rule's verdict cannot depend
+    /// on where the process happens to be when it runs.
+    cwd: PathBuf,
 }
 
 impl Linter {
-    /// Returns a Linter. `None` for `counter` falls back to the heuristic
-    /// estimator.
+    /// Returns a Linter anchored to the process's working directory. `None`
+    /// for `counter` falls back to the heuristic estimator.
     pub fn new(cfg: Config, counter: Option<Box<dyn Counter>>) -> Self {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        Self::with_cwd(cfg, counter, cwd)
+    }
+
+    /// Returns a Linter that treats `cwd` as the working directory, so the one
+    /// rule that cares can be tested without mutating process-global state
+    /// while other tests run alongside it.
+    pub fn with_cwd(cfg: Config, counter: Option<Box<dyn Counter>>, cwd: PathBuf) -> Self {
         let counter = counter.unwrap_or_else(|| Box::new(tokens::Estimator::new()));
         let disabled = cfg.disabled.iter().cloned().collect();
         Linter {
             cfg,
             counter,
             disabled,
+            cwd,
         }
     }
 
@@ -387,7 +400,7 @@ impl Linter {
                 format!("name is {n} characters, over the {MAX_NAME_CHARS} character limit"),
             );
         }
-        if let Some(dir) = skill_dir(&t.path)
+        if let Some(dir) = self.skill_dir(&t.path)
             && dir != name
         {
             r.add(
@@ -522,6 +535,31 @@ impl Linter {
             }
         }
     }
+
+    /// Returns the name of the directory holding the skill file, or `None`
+    /// when there is no meaningful directory to match the name against: a
+    /// loose skill file in the working directory is named after the project,
+    /// not the skill.
+    fn skill_dir(&self, path: &str) -> Option<String> {
+        let abs = self.abs_path(Path::new(path));
+        let dir = abs.parent()?.to_path_buf();
+        if dir == clean_path(&self.cwd) {
+            return None;
+        }
+        dir.file_name()?.to_str().map(str::to_string)
+    }
+
+    /// Joins `path` onto the linter's working directory when relative and
+    /// lexically normalizes it, without touching the filesystem or resolving
+    /// symlinks (mirroring Go's `filepath.Abs`).
+    fn abs_path(&self, path: &Path) -> PathBuf {
+        let joined = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cwd.join(path)
+        };
+        clean_path(&joined)
+    }
 }
 
 /// Tracks which lines sit inside a fenced code block, so their contents are
@@ -629,32 +667,6 @@ fn code_span_target_path(raw: &str) -> Option<String> {
         return None;
     }
     Some(target.to_string())
-}
-
-/// Returns the name of the directory holding the skill file, or `None` when
-/// there is no meaningful directory to match the name against: a loose skill
-/// file in the working directory is named after the project, not the skill.
-fn skill_dir(path: &str) -> Option<String> {
-    let abs = abs_path(Path::new(path));
-    let dir = abs.parent()?.to_path_buf();
-    if let Ok(cwd) = std::env::current_dir()
-        && dir == clean_path(&cwd)
-    {
-        return None;
-    }
-    dir.file_name()?.to_str().map(str::to_string)
-}
-
-/// Joins `path` onto the working directory when relative and lexically
-/// normalizes it, without touching the filesystem or resolving symlinks
-/// (mirroring Go's `filepath.Abs`).
-fn abs_path(path: &Path) -> PathBuf {
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(path)
-    };
-    clean_path(&joined)
 }
 
 fn clean_path(path: &Path) -> PathBuf {
@@ -1014,6 +1026,30 @@ mod tests {
         let with_res = linter.file(&with_fm).unwrap();
         let bare_res = linter.file(&bare).unwrap();
         assert_eq!(with_res.tokens.content, bare_res.tokens.content);
+    }
+
+    #[test]
+    fn name_dir_mismatch_uses_injected_cwd() {
+        // name.dir-mismatch deliberately ignores a skill sitting directly in
+        // the working directory, since a loose SKILL.md is named for its
+        // project rather than its folder. Injecting the cwd is what makes that
+        // branch testable: reading it from the process would mean chdir-ing
+        // while the rest of the suite runs concurrently.
+        let (base, target) = write_skill(
+            "some-directory",
+            "---\nname: other-name\ndescription: A skill in a mismatched directory.\n---\nBody.\n",
+        );
+        let holding_dir = Path::new(&target.path).parent().unwrap().to_path_buf();
+
+        let res = Linter::with_cwd(generous_config(), None, holding_dir)
+            .file(&target)
+            .unwrap();
+        assert!(res.findings.is_empty(), "{:?}", rule_ids(&res.findings));
+
+        let res = Linter::with_cwd(generous_config(), None, base.path().to_path_buf())
+            .file(&target)
+            .unwrap();
+        assert_eq!(rule_ids(&res.findings), vec![RULE_NAME_DIR_MISMATCH]);
     }
 
     #[test]

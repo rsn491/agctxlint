@@ -492,14 +492,9 @@ impl Linter {
         let dir = Path::new(&t.path).parent().unwrap_or_else(|| Path::new(""));
         let offset = if fm.present { fm.end_line } else { 0 };
 
-        let mut in_fence = false;
+        let mut fences = FenceTracker::default();
         for (i, line) in body.split('\n').enumerate() {
-            let fence = line.trim();
-            if fence.starts_with("```") || fence.starts_with("~~~") {
-                in_fence = !in_fence;
-                continue;
-            }
-            if in_fence {
+            if !fences.scan_line(line) {
                 continue;
             }
             let mut targets: Vec<String> = Vec::new();
@@ -527,6 +522,58 @@ impl Linter {
             }
         }
     }
+}
+
+/// Tracks which lines sit inside a fenced code block, so their contents are
+/// not scanned for file references.
+///
+/// A single boolean is not enough: a fence closes only on a run of the same
+/// marker character at least as long as the one that opened it, so a ``` line
+/// inside a ```` block is content rather than a close. Getting that wrong
+/// re-exposes the block body to the reference check, and
+/// `file-reference.missing` is an error, so it fails a build on a correct file.
+#[derive(Default)]
+struct FenceTracker {
+    /// The open fence's marker character and run length, `None` outside a block.
+    open: Option<(char, usize)>,
+}
+
+impl FenceTracker {
+    /// Feeds the tracker one line and reports whether that line's content
+    /// should be scanned. Fence lines themselves never are.
+    fn scan_line(&mut self, line: &str) -> bool {
+        let trimmed = line.trim();
+        let Some((marker, len, info)) = fence_parts(trimmed) else {
+            return self.open.is_none();
+        };
+        match self.open {
+            // Inside a block, only a matching fence closes it: same marker, at
+            // least as long, and no info string. Anything else -- a shorter
+            // run, the other marker, ```rust -- is block content.
+            Some((open_marker, open_len)) => {
+                if marker == open_marker && len >= open_len && info.trim().is_empty() {
+                    self.open = None;
+                }
+            }
+            None => self.open = Some((marker, len)),
+        }
+        false
+    }
+}
+
+/// Splits a fence line into its marker character, the length of its marker run,
+/// and the info string that follows. `None` when the line is not a fence.
+fn fence_parts(trimmed: &str) -> Option<(char, usize, &str)> {
+    let marker = match trimmed.chars().next()? {
+        c @ ('`' | '~') => c,
+        _ => return None,
+    };
+    // Markers are ASCII, so the char count doubles as a byte offset.
+    let len = trimmed.chars().take_while(|c| *c == marker).count();
+    if len < 3 {
+        return None;
+    }
+    Some((marker, len, &trimmed[len..]))
 }
 
 /// Extracts the file path a markdown link points at, or `None` when the link
@@ -686,6 +733,13 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, src).unwrap();
         path.to_string_lossy().to_string()
+    }
+
+    fn agents_target(dir: &Path, src: &str) -> Target {
+        Target {
+            path: write_file(dir, "AGENTS.md", src),
+            kind: Kind::Agents,
+        }
     }
 
     fn rule_ids(findings: &[Finding]) -> Vec<&str> {
@@ -892,10 +946,7 @@ mod tests {
     fn per_kind_content_budget() {
         let base = tempfile::tempdir().unwrap();
         let body = "some filler prose to spend tokens on. ".repeat(20);
-        let agents = Target {
-            path: write_file(base.path(), "AGENTS.md", &body),
-            kind: Kind::Agents,
-        };
+        let agents = agents_target(base.path(), &body);
         let (_skill_base, skill) = write_skill(
             "kinded",
             &format!("---\nname: kinded\ndescription: A skill with a body.\n---\n{body}"),
@@ -933,10 +984,7 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let src =
             "---\ntitle: Project instructions\nowner: infra\n---\n\n# Instructions\n\nBody.\n";
-        let target = Target {
-            path: write_file(base.path(), "AGENTS.md", src),
-            kind: Kind::Agents,
-        };
+        let target = agents_target(base.path(), src);
 
         let res = Linter::new(generous_config(), None).file(&target).unwrap();
         assert!(res.findings.is_empty());
@@ -947,10 +995,7 @@ mod tests {
     fn agents_unterminated_frontmatter_is_reported() {
         let base = tempfile::tempdir().unwrap();
         let src = "---\ntitle: Project instructions\n\n# Instructions never closed\n";
-        let target = Target {
-            path: write_file(base.path(), "AGENTS.md", src),
-            kind: Kind::Agents,
-        };
+        let target = agents_target(base.path(), src);
 
         let res = Linter::new(generous_config(), None).file(&target).unwrap();
         assert_eq!(rule_ids(&res.findings), vec![RULE_FRONTMATTER_UNTERMINATED]);
@@ -961,15 +1006,9 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let fm_src =
             "---\ntitle: A fairly wordy front matter block that costs real tokens\n---\nBody.\n";
-        let with_fm = Target {
-            path: write_file(base.path(), "AGENTS.md", fm_src),
-            kind: Kind::Agents,
-        };
+        let with_fm = agents_target(base.path(), fm_src);
         let base2 = tempfile::tempdir().unwrap();
-        let bare = Target {
-            path: write_file(base2.path(), "AGENTS.md", "Body.\n"),
-            kind: Kind::Agents,
-        };
+        let bare = agents_target(base2.path(), "Body.\n");
 
         let linter = Linter::new(generous_config(), None);
         let with_res = linter.file(&with_fm).unwrap();
@@ -1059,40 +1098,28 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             write_file(dir.path(), "notes.md", "notes");
             let src = "# Instructions\n\nSee [notes](./notes.md) for details.\n";
-            let target = Target {
-                path: write_file(dir.path(), "AGENTS.md", src),
-                kind: Kind::Agents,
-            };
+            let target = agents_target(dir.path(), src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert!(res.findings.is_empty());
         }
         {
             let dir = tempfile::tempdir().unwrap();
             let src = "# Instructions\n\nSee [notes](./notes.md) for details.\n";
-            let target = Target {
-                path: write_file(dir.path(), "AGENTS.md", src),
-                kind: Kind::Agents,
-            };
+            let target = agents_target(dir.path(), src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert_eq!(rule_ids(&res.findings), vec![RULE_FILE_REFERENCE_MISSING]);
         }
         {
             let dir = tempfile::tempdir().unwrap();
             let src = "See [docs](https://example.com/x), [mail](mailto:a@example.com) and [section](#heading).\n";
-            let target = Target {
-                path: write_file(dir.path(), "AGENTS.md", src),
-                kind: Kind::Agents,
-            };
+            let target = agents_target(dir.path(), src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert!(res.findings.is_empty());
         }
         {
             let dir = tempfile::tempdir().unwrap();
             let src = "Example syntax:\n\n```md\n[example](./missing.md)\n```\n";
-            let target = Target {
-                path: write_file(dir.path(), "AGENTS.md", src),
-                kind: Kind::Agents,
-            };
+            let target = agents_target(dir.path(), src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert!(res.findings.is_empty());
         }
@@ -1107,13 +1134,58 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let src = "# Instructions\n\nIntro line.\n\nSee [notes](./notes.md).\n";
-            let target = Target {
-                path: write_file(dir.path(), "AGENTS.md", src),
-                kind: Kind::Agents,
-            };
+            let target = agents_target(dir.path(), src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert_eq!(res.findings.len(), 1);
             assert_eq!(res.findings[0].line, 5);
+        }
+    }
+
+    #[test]
+    fn file_reference_rule_nested_fences() {
+        // A fence closes only on the same marker, at least as long, with no
+        // info string. Each case pairs a source file with the rules it should
+        // produce, so both directions of the old toggle bug are covered: the
+        // block body must stay unscanned, and the tracker must not latch open
+        // and swallow the prose that follows.
+        let cases: &[(&str, &str, Vec<&str>)] = &[
+            (
+                "inner ``` does not close an outer ````",
+                "````md\n```\n[x](./missing.md)\n```\nstill inside: [y](./gone.md)\n````\n",
+                vec![],
+            ),
+            (
+                "~~~ does not close a ``` block",
+                "```\n~~~\n[x](./missing.md)\n~~~\n```\n",
+                vec![],
+            ),
+            (
+                "a fence carrying an info string does not close",
+                "```\n```rust\n[x](./missing.md)\n```\n",
+                vec![],
+            ),
+            (
+                "prose after a closed block is still scanned",
+                "````\n```\n````\n\nSee [y](./gone.md).\n",
+                vec![RULE_FILE_REFERENCE_MISSING],
+            ),
+            (
+                "a longer run closes a shorter block",
+                "```\n[x](./missing.md)\n````\n\nSee [y](./gone.md).\n",
+                vec![RULE_FILE_REFERENCE_MISSING],
+            ),
+            (
+                "an indented closing fence still closes",
+                "```\n[x](./missing.md)\n  ```\n\nSee [y](./gone.md).\n",
+                vec![RULE_FILE_REFERENCE_MISSING],
+            ),
+        ];
+
+        for (name, src, want) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let target = agents_target(dir.path(), src);
+            let res = Linter::new(generous_config(), None).file(&target).unwrap();
+            assert_eq!(rule_ids(&res.findings), *want, "{name}");
         }
     }
 
@@ -1123,10 +1195,7 @@ mod tests {
             // Path-shaped inline code span pointing at a missing file.
             let dir = tempfile::tempdir().unwrap();
             let src = "Read instructions from `../planner_instructions.md`.\n";
-            let target = Target {
-                path: write_file(dir.path(), "AGENTS.md", src),
-                kind: Kind::Agents,
-            };
+            let target = agents_target(dir.path(), src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert_eq!(rule_ids(&res.findings), vec![RULE_FILE_REFERENCE_MISSING]);
         }
@@ -1137,10 +1206,7 @@ mod tests {
             fs::create_dir_all(&sub).unwrap();
             write_file(dir.path(), "planner_instructions.md", "notes");
             let src = "Read instructions from `../planner_instructions.md`.\n";
-            let target = Target {
-                path: write_file(&sub, "AGENTS.md", src),
-                kind: Kind::Agents,
-            };
+            let target = agents_target(&sub, src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert!(res.findings.is_empty());
         }
@@ -1148,10 +1214,7 @@ mod tests {
             // Code spans that are not path-shaped are left alone.
             let dir = tempfile::tempdir().unwrap();
             let src = "Run `cargo test`, check `--strict`, or see `notes` and `./bin/lint`.\n";
-            let target = Target {
-                path: write_file(dir.path(), "AGENTS.md", src),
-                kind: Kind::Agents,
-            };
+            let target = agents_target(dir.path(), src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert!(res.findings.is_empty());
         }
@@ -1160,10 +1223,7 @@ mod tests {
             // one line report once, not twice.
             let dir = tempfile::tempdir().unwrap();
             let src = "See [it](./missing.md) or `./missing.md`.\n";
-            let target = Target {
-                path: write_file(dir.path(), "AGENTS.md", src),
-                kind: Kind::Agents,
-            };
+            let target = agents_target(dir.path(), src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert_eq!(rule_ids(&res.findings), vec![RULE_FILE_REFERENCE_MISSING]);
         }
@@ -1171,10 +1231,7 @@ mod tests {
             // Code spans inside fenced code blocks are still ignored.
             let dir = tempfile::tempdir().unwrap();
             let src = "Example:\n\n```md\nSee `../missing.md`.\n```\n";
-            let target = Target {
-                path: write_file(dir.path(), "AGENTS.md", src),
-                kind: Kind::Agents,
-            };
+            let target = agents_target(dir.path(), src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert!(res.findings.is_empty());
         }

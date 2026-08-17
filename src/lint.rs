@@ -75,6 +75,13 @@ static RULE_ORDER: LazyLock<HashMap<&'static str, usize>> =
 pub const MAX_NAME_CHARS: usize = 64;
 pub const MAX_DESCRIPTION_CHARS: usize = 1024;
 
+/// Default token budgets. `Config::default` and the CLI's flag defaults both
+/// read these, so the two cannot drift apart.
+pub const DEFAULT_MAX_AGENTS_TOKENS: i64 = 2500;
+pub const DEFAULT_MAX_SKILL_TOKENS: i64 = 5000;
+pub const DEFAULT_MAX_SKILL_NAME_TOKENS: i64 = 16;
+pub const DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS: i64 = 100;
+
 /// The front-matter keys the skill spec defines, plus the Claude Code
 /// extensions ctxlint additionally supports. Anything else is reported as an
 /// unknown key.
@@ -112,7 +119,7 @@ static URI_SCHEME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z][a-zA-Z0-9+.-]*:").unwrap());
 
 /// Holds the thresholds and switches that shape a run.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// Body token budgets, one per file kind. Zero disables the check for
     /// that kind.
@@ -125,6 +132,22 @@ pub struct Config {
     pub disabled: Vec<String>,
     /// Treat warnings as errors.
     pub strict: bool,
+}
+
+/// Zero means "check disabled", so a derived `Default` would hand back a
+/// linter that silently enforces nothing. Spell the real budgets out instead,
+/// so the value reached by accident is the safe one.
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            max_agents_tokens: DEFAULT_MAX_AGENTS_TOKENS,
+            max_skill_tokens: DEFAULT_MAX_SKILL_TOKENS,
+            max_skill_name_tokens: DEFAULT_MAX_SKILL_NAME_TOKENS,
+            max_skill_description_tokens: DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS,
+            disabled: Vec::new(),
+            strict: false,
+        }
+    }
 }
 
 impl Config {
@@ -758,6 +781,9 @@ mod tests {
         findings.iter().map(|f| f.rule.as_str()).collect()
     }
 
+    /// Every budget off, so rule tests see only the rule under test. Spelled
+    /// out rather than derived from Config::default(), which now carries the
+    /// real budgets -- keep it explicit.
     fn generous_config() -> Config {
         Config {
             max_agents_tokens: 0,
@@ -1050,6 +1076,26 @@ mod tests {
             .file(&target)
             .unwrap();
         assert_eq!(rule_ids(&res.findings), vec![RULE_NAME_DIR_MISMATCH]);
+    }
+
+    #[test]
+    fn default_config_enforces_budgets() {
+        let cfg = Config::default();
+        assert_eq!(cfg.max_agents_tokens, DEFAULT_MAX_AGENTS_TOKENS);
+        assert_eq!(cfg.max_skill_tokens, DEFAULT_MAX_SKILL_TOKENS);
+        assert_eq!(cfg.max_skill_name_tokens, DEFAULT_MAX_SKILL_NAME_TOKENS);
+        assert_eq!(
+            cfg.max_skill_description_tokens,
+            DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS
+        );
+
+        // The point of the hand-written Default: reaching for it must not
+        // hand back a linter that checks nothing.
+        let base = tempfile::tempdir().unwrap();
+        let body = "some filler prose to spend tokens on. ".repeat(500);
+        let target = agents_target(base.path(), &body);
+        let res = Linter::new(Config::default(), None).file(&target).unwrap();
+        assert_eq!(rule_ids(&res.findings), vec![RULE_TOKENS_CONTENT]);
     }
 
     #[test]

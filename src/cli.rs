@@ -3,7 +3,10 @@
 use std::io::Write;
 
 use crate::discover;
-use crate::lint::{self, Config};
+use crate::lint::{
+    self, Config, DEFAULT_MAX_AGENTS_TOKENS, DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS,
+    DEFAULT_MAX_SKILL_NAME_TOKENS, DEFAULT_MAX_SKILL_TOKENS,
+};
 use crate::report;
 
 /// No errors were found; warnings alone still exit OK.
@@ -15,11 +18,6 @@ pub const EXIT_USAGE: i32 = 2;
 
 /// The reported build version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-const DEFAULT_MAX_AGENTS_TOKENS: i64 = 2500;
-const DEFAULT_MAX_SKILL_TOKENS: i64 = 5000;
-const DEFAULT_MAX_SKILL_NAME_TOKENS: i64 = 16;
-const DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS: i64 = 100;
 
 struct Flags {
     max_agents_tokens: i64,
@@ -39,11 +37,14 @@ struct Flags {
 
 impl Default for Flags {
     fn default() -> Self {
+        // Budgets come from Config so the flag defaults, the usage text and
+        // the library default are one value each.
+        let cfg = Config::default();
         Flags {
-            max_agents_tokens: DEFAULT_MAX_AGENTS_TOKENS,
-            max_skill_tokens: DEFAULT_MAX_SKILL_TOKENS,
-            max_skill_name_tokens: DEFAULT_MAX_SKILL_NAME_TOKENS,
-            max_skill_description_tokens: DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS,
+            max_agents_tokens: cfg.max_agents_tokens,
+            max_skill_tokens: cfg.max_skill_tokens,
+            max_skill_name_tokens: cfg.max_skill_name_tokens,
+            max_skill_description_tokens: cfg.max_skill_description_tokens,
             format: "text".to_string(),
             color: "auto".to_string(),
             strict: false,

@@ -2,6 +2,11 @@
 //! file a repository can use to pin them once instead of repeating flags on
 //! every invocation.
 //!
+//! Run-behavior flags (`--strict`, `--quiet`, `--format`, `--color`) are
+//! deliberately not configurable here: they shape how a single invocation
+//! reports its findings, not what the repository considers a violation, so
+//! they stay flag-only.
+//!
 //! Every file setting mirrors the flag of the same name. Flags win over the
 //! file, and the file wins over the built-in defaults, so a config file sets
 //! the project's baseline without preventing a one-off override on the
@@ -76,10 +81,6 @@ const KNOWN_KEYS: &[&str] = &[
     "max-skill-description-tokens",
     "exclude",
     "rules",
-    "strict",
-    "quiet",
-    "format",
-    "color",
 ];
 
 /// The settings one config file asked for. Every scalar is optional: absent
@@ -91,10 +92,6 @@ pub struct Settings {
     pub max_skill_tokens: Option<i64>,
     pub max_skill_name_tokens: Option<i64>,
     pub max_skill_description_tokens: Option<i64>,
-    pub strict: Option<bool>,
-    pub quiet: Option<bool>,
-    pub format: Option<String>,
-    pub color: Option<String>,
     /// Globs of paths to skip, appended to any `--exclude`.
     pub excludes: Vec<String>,
     /// Rule ids switched off under `rules:`, appended to any `--disable`.
@@ -164,10 +161,6 @@ pub fn parse(src: &str, path: &str) -> Result<Settings, String> {
             "max-skill-description-tokens" => {
                 cfg.max_skill_description_tokens = Some(budget(path, &name, value)?);
             }
-            "strict" => cfg.strict = Some(boolean(path, &name, value)?),
-            "quiet" => cfg.quiet = Some(boolean(path, &name, value)?),
-            "format" => cfg.format = Some(string(path, &name, value)?),
-            "color" => cfg.color = Some(string(path, &name, value)?),
             "exclude" => cfg.excludes = string_list(path, &name, value)?,
             "rules" => cfg.disabled = rules(path, value)?,
             _ => {
@@ -281,10 +274,6 @@ max-agents-tokens: 1200
 max-skill-tokens: 0
 max-skill-name-tokens: 8
 max-skill-description-tokens: 64
-strict: true
-quiet: false
-format: json
-color: never
 exclude:
   - testdata
   - "examples/**"
@@ -301,10 +290,6 @@ rules:
                 max_skill_tokens: Some(0),
                 max_skill_name_tokens: Some(8),
                 max_skill_description_tokens: Some(64),
-                strict: Some(true),
-                quiet: Some(false),
-                format: Some("json".to_string()),
-                color: Some("never".to_string()),
                 excludes: vec!["testdata".to_string(), "examples/**".to_string()],
                 // Only the rules switched off are collected, in file order.
                 disabled: vec![
@@ -324,10 +309,9 @@ rules:
     }
 
     #[test]
-    fn scalar_shorthands() {
-        let got = parse_str("exclude: testdata\nstrict: yes\n").unwrap();
+    fn scalar_shorthand_accepts_a_lone_exclude() {
+        let got = parse_str("exclude: testdata\n").unwrap();
         assert_eq!(got.excludes, vec!["testdata".to_string()]);
-        assert_eq!(got.strict, Some(true));
     }
 
     #[test]
@@ -354,14 +338,9 @@ rules:
                 ".ctxlint.yaml:2: max-skill-tokens must be an integer",
             ),
             (
-                "bad boolean",
-                "strict: sometimes\n",
-                ".ctxlint.yaml:1: invalid value \"sometimes\" for strict",
-            ),
-            (
                 "empty string",
-                "format: \"\"\n",
-                ".ctxlint.yaml:1: format must be a non-empty string",
+                "exclude: \"\"\n",
+                ".ctxlint.yaml:1: exclude must be a non-empty string",
             ),
             (
                 "exclude entry is a mapping",
@@ -390,7 +369,7 @@ rules:
             ),
             (
                 "invalid yaml",
-                "strict: true\n  quiet: true\n",
+                "max-skill-tokens: 1\n  exclude: true\n",
                 "invalid YAML",
             ),
         ];
@@ -427,17 +406,17 @@ rules:
         assert!(discover(&nested).is_none());
 
         let root_cfg = dir.path().join(".ctxlint.yml");
-        fs::write(&root_cfg, "strict: true\n").unwrap();
+        fs::write(&root_cfg, "max-skill-tokens: 1\n").unwrap();
         assert_eq!(discover(&nested), Some(root_cfg));
 
         // .yaml wins over .yml in the same directory, and the nearest
         // directory wins over an ancestor.
         let preferred = dir.path().join(".ctxlint.yaml");
-        fs::write(&preferred, "strict: true\n").unwrap();
+        fs::write(&preferred, "max-skill-tokens: 1\n").unwrap();
         assert_eq!(discover(dir.path()), Some(preferred));
 
         let nested_cfg = nested.join(".ctxlint.yaml");
-        fs::write(&nested_cfg, "strict: false\n").unwrap();
+        fs::write(&nested_cfg, "max-skill-tokens: 2\n").unwrap();
         assert_eq!(discover(&nested), Some(nested_cfg));
     }
 

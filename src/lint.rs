@@ -524,8 +524,14 @@ impl Linter {
     /// linted file's directory. Applies to both AGENTS.md and SKILL.md, since
     /// a dangling reference breaks the file's contract with the runtime
     /// regardless of kind.
+    ///
+    /// References resolving outside the linted tree are left alone, like URLs
+    /// and absolute paths: ctxlint often runs in CI over a checkout it does
+    /// not trust, and stat-ing whatever path a file names would turn its
+    /// markdown into a probe for what exists on the host.
     fn check_file_references(&self, t: &Target, fm: &Frontmatter, body: &str, r: &mut Reporter) {
         let dir = Path::new(&t.path).parent().unwrap_or_else(|| Path::new(""));
+        let root = self.abs_path(&t.root);
         let offset = if fm.present { fm.end_line } else { 0 };
 
         let mut fences = FenceTracker::default();
@@ -547,7 +553,13 @@ impl Linter {
                 }
             }
             for target in targets {
-                if std::fs::metadata(dir.join(&target)).is_err() {
+                // Resolved lexically, so deciding whether a reference escapes
+                // the tree costs no filesystem access of its own.
+                let resolved = self.abs_path(&dir.join(&target));
+                if !resolved.starts_with(&root) {
+                    continue;
+                }
+                if std::fs::metadata(&resolved).is_err() {
                     r.add(
                         RULE_FILE_REFERENCE_MISSING,
                         Severity::Error,
@@ -760,6 +772,7 @@ mod tests {
         let target = Target {
             path: path.to_string_lossy().to_string(),
             kind: Kind::Skill,
+            root: base.path().to_path_buf(),
         };
         (base, target)
     }
@@ -771,9 +784,18 @@ mod tests {
     }
 
     fn agents_target(dir: &Path, src: &str) -> Target {
+        agents_target_under(dir, dir, src)
+    }
+
+    /// An AGENTS.md written into `dir`, but discovered under walk root `root`.
+    /// Separate from `agents_target` so a fixture can sit below its root, which
+    /// is what makes a `../` reference back into the tree distinguishable from
+    /// one that escapes it.
+    fn agents_target_under(root: &Path, dir: &Path, src: &str) -> Target {
         Target {
             path: write_file(dir, "AGENTS.md", src),
             kind: Kind::Agents,
+            root: root.to_path_buf(),
         }
     }
 
@@ -1155,6 +1177,7 @@ mod tests {
         let target = Target {
             path: base.path().join("SKILL.md").to_string_lossy().to_string(),
             kind: Kind::Skill,
+            root: base.path().to_path_buf(),
         };
         assert!(Linter::new(generous_config(), None).file(&target).is_err());
     }
@@ -1224,6 +1247,46 @@ mod tests {
     }
 
     #[test]
+    fn file_references_outside_the_linted_tree_are_skipped() {
+        // Escapes are skipped whether or not the target exists. ctxlint runs
+        // in CI over checkouts it does not trust, and a finding that
+        // distinguished "exists" from "does not exist" above the root would
+        // make any file's markdown a probe for what is on the host.
+        let outer = tempfile::tempdir().unwrap();
+        write_file(outer.path(), "outside.md", "a real file above the root");
+        let root = outer.path().join("root");
+        let sub = root.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+
+        let escaping: &[(&str, &str)] = &[
+            (
+                "link to an existing file above the root",
+                "See [x](../../outside.md).\n",
+            ),
+            (
+                "link to a missing file above the root",
+                "See [x](../../nowhere.md).\n",
+            ),
+            ("code span escaping the root", "Read `../../outside.md`.\n"),
+        ];
+        for (name, src) in escaping {
+            let target = agents_target_under(&root, &sub, src);
+            let res = Linter::new(generous_config(), None).file(&target).unwrap();
+            assert!(
+                res.findings.is_empty(),
+                "{name}: {:?}",
+                rule_ids(&res.findings)
+            );
+        }
+
+        // Control: a missing reference that stays inside the tree is still
+        // reported, so the cases above are not passing vacuously.
+        let target = agents_target_under(&root, &sub, "See [x](./nowhere.md).\n");
+        let res = Linter::new(generous_config(), None).file(&target).unwrap();
+        assert_eq!(rule_ids(&res.findings), vec![RULE_FILE_REFERENCE_MISSING]);
+    }
+
+    #[test]
     fn file_reference_rule_nested_fences() {
         // A fence closes only on the same marker, at least as long, with no
         // info string. Each case pairs a source file with the rules it should
@@ -1274,21 +1337,26 @@ mod tests {
     #[test]
     fn file_reference_rule_code_spans() {
         {
-            // Path-shaped inline code span pointing at a missing file.
+            // Path-shaped inline code span pointing at a missing file inside
+            // the tree.
             let dir = tempfile::tempdir().unwrap();
+            let sub = dir.path().join("sub");
+            fs::create_dir_all(&sub).unwrap();
             let src = "Read instructions from `../planner_instructions.md`.\n";
-            let target = agents_target(dir.path(), src);
+            let target = agents_target_under(dir.path(), &sub, src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert_eq!(rule_ids(&res.findings), vec![RULE_FILE_REFERENCE_MISSING]);
         }
         {
-            // Same reference, but the file exists.
+            // Same reference, but the file exists. A `../` hop that lands back
+            // inside the linted tree must still be checked -- this is the
+            // guard that skipping escapes did not swallow ordinary references.
             let dir = tempfile::tempdir().unwrap();
             let sub = dir.path().join("sub");
             fs::create_dir_all(&sub).unwrap();
             write_file(dir.path(), "planner_instructions.md", "notes");
             let src = "Read instructions from `../planner_instructions.md`.\n";
-            let target = agents_target(&sub, src);
+            let target = agents_target_under(dir.path(), &sub, src);
             let res = Linter::new(generous_config(), None).file(&target).unwrap();
             assert!(res.findings.is_empty());
         }

@@ -1,3 +1,6 @@
+[workspace]
+members = ["web"]
+
 [package]
 name = "ctxlint"
 version = "0.0.1"

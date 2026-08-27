@@ -2,7 +2,9 @@
 //! front-matter correctness and token budget overruns.
 
 mod cli;
+mod config;
 mod discover;
+mod fence;
 mod lint;
 mod parse;
 mod report;

@@ -2,11 +2,12 @@
 
 use std::io::Write;
 
-use crate::discover;
-use crate::lint::{
-    self, Config, DEFAULT_MAX_AGENTS_TOKENS, DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS,
+use crate::config::{
+    Config, DEFAULT_MAX_AGENTS_TOKENS, DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS,
     DEFAULT_MAX_SKILL_NAME_TOKENS, DEFAULT_MAX_SKILL_TOKENS,
 };
+use crate::discover;
+use crate::lint;
 use crate::report;
 
 /// No errors were found; warnings alone still exit OK.

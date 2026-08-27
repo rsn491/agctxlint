@@ -7,7 +7,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::config::Config;
 use crate::discover::{Kind, Target};
+use crate::fence::FenceTracker;
 use crate::parse::{self, ErrKind, Frontmatter, Value};
 use crate::tokens::{self, Counter};
 
@@ -75,13 +77,6 @@ static RULE_ORDER: LazyLock<HashMap<&'static str, usize>> =
 pub const MAX_NAME_CHARS: usize = 64;
 pub const MAX_DESCRIPTION_CHARS: usize = 1024;
 
-/// Default token budgets. `Config::default` and the CLI's flag defaults both
-/// read these, so the two cannot drift apart.
-pub const DEFAULT_MAX_AGENTS_TOKENS: i64 = 2500;
-pub const DEFAULT_MAX_SKILL_TOKENS: i64 = 5000;
-pub const DEFAULT_MAX_SKILL_NAME_TOKENS: i64 = 16;
-pub const DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS: i64 = 100;
-
 /// The front-matter keys the skill spec defines, plus the Claude Code
 /// extensions ctxlint additionally supports. Anything else is reported as an
 /// unknown key.
@@ -117,48 +112,6 @@ static CODE_SPAN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`]+)`")
 /// those targets are left for a browser rather than checked as files.
 static URI_SCHEME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z][a-zA-Z0-9+.-]*:").unwrap());
-
-/// Holds the thresholds and switches that shape a run.
-#[derive(Debug, Clone)]
-pub struct Config {
-    /// Body token budgets, one per file kind. Zero disables the check for
-    /// that kind.
-    pub max_agents_tokens: i64,
-    pub max_skill_tokens: i64,
-    /// Skill-only budgets. Zero disables the check.
-    pub max_skill_name_tokens: i64,
-    pub max_skill_description_tokens: i64,
-    /// Rule ids to skip.
-    pub disabled: Vec<String>,
-    /// Treat warnings as errors.
-    pub strict: bool,
-}
-
-/// Zero means "check disabled", so a derived `Default` would hand back a
-/// linter that silently enforces nothing. Spell the real budgets out instead,
-/// so the value reached by accident is the safe one.
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            max_agents_tokens: DEFAULT_MAX_AGENTS_TOKENS,
-            max_skill_tokens: DEFAULT_MAX_SKILL_TOKENS,
-            max_skill_name_tokens: DEFAULT_MAX_SKILL_NAME_TOKENS,
-            max_skill_description_tokens: DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS,
-            disabled: Vec::new(),
-            strict: false,
-        }
-    }
-}
-
-impl Config {
-    fn content_limit(&self, kind: Kind) -> i64 {
-        if kind == Kind::Agents {
-            self.max_agents_tokens
-        } else {
-            self.max_skill_tokens
-        }
-    }
-}
 
 /// A single rule violation.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -597,58 +550,6 @@ impl Linter {
     }
 }
 
-/// Tracks which lines sit inside a fenced code block, so their contents are
-/// not scanned for file references.
-///
-/// A single boolean is not enough: a fence closes only on a run of the same
-/// marker character at least as long as the one that opened it, so a ``` line
-/// inside a ```` block is content rather than a close. Getting that wrong
-/// re-exposes the block body to the reference check, and
-/// `file-reference.missing` is an error, so it fails a build on a correct file.
-#[derive(Default)]
-struct FenceTracker {
-    /// The open fence's marker character and run length, `None` outside a block.
-    open: Option<(char, usize)>,
-}
-
-impl FenceTracker {
-    /// Feeds the tracker one line and reports whether that line's content
-    /// should be scanned. Fence lines themselves never are.
-    fn scan_line(&mut self, line: &str) -> bool {
-        let trimmed = line.trim();
-        let Some((marker, len, info)) = fence_parts(trimmed) else {
-            return self.open.is_none();
-        };
-        match self.open {
-            // Inside a block, only a matching fence closes it: same marker, at
-            // least as long, and no info string. Anything else -- a shorter
-            // run, the other marker, ```rust -- is block content.
-            Some((open_marker, open_len)) => {
-                if marker == open_marker && len >= open_len && info.trim().is_empty() {
-                    self.open = None;
-                }
-            }
-            None => self.open = Some((marker, len)),
-        }
-        false
-    }
-}
-
-/// Splits a fence line into its marker character, the length of its marker run,
-/// and the info string that follows. `None` when the line is not a fence.
-fn fence_parts(trimmed: &str) -> Option<(char, usize, &str)> {
-    let marker = match trimmed.chars().next()? {
-        c @ ('`' | '~') => c,
-        _ => return None,
-    };
-    // Markers are ASCII, so the char count doubles as a byte offset.
-    let len = trimmed.chars().take_while(|c| *c == marker).count();
-    if len < 3 {
-        return None;
-    }
-    Some((marker, len, &trimmed[len..]))
-}
-
 /// Extracts the file path a markdown link points at, or `None` when the link
 /// is not a checkable local file reference: an absolute URL, an in-page
 /// anchor, an absolute path, or a templated placeholder.
@@ -761,6 +662,10 @@ fn humanize(n: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        DEFAULT_MAX_AGENTS_TOKENS, DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS,
+        DEFAULT_MAX_SKILL_NAME_TOKENS, DEFAULT_MAX_SKILL_TOKENS,
+    };
     use std::fs;
 
     fn write_skill(skill_name: &str, src: &str) -> (tempfile::TempDir, Target) {

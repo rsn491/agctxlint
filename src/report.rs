@@ -3,6 +3,7 @@
 use std::io::{self, Write};
 
 use crate::lint::{FileResult, Finding, Severity};
+use crate::utils::plural;
 
 /// Bumped when the JSON shape changes incompatibly.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -190,14 +191,6 @@ fn filter_errors(findings: &[Finding]) -> Vec<Finding> {
         .filter(|f| f.severity != Severity::Warning)
         .cloned()
         .collect()
-}
-
-fn plural(n: usize, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("{n} {one}")
-    } else {
-        format!("{n} {many}")
-    }
 }
 
 #[cfg(test)]

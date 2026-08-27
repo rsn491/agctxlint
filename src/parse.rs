@@ -128,12 +128,37 @@ fn fence_line(line: &str) -> &str {
     line.trim_end_matches('\r')
 }
 
+/// A markdown file split into its front matter and body.
+///
+/// A three-value tuple made every caller destructure positionally and gave the
+/// pieces no name; this gives them one. `error` describes a malformed block:
+/// `body` is still populated in that case, so token budgets can be reported
+/// for a file whose front matter did not parse.
+pub struct Document {
+    pub frontmatter: Frontmatter,
+    pub body: String,
+    pub error: Option<Error>,
+}
+
+impl Document {
+    /// Parses one markdown file. A file with no front matter is not an error:
+    /// `frontmatter.present` is false and `body` is the whole file.
+    pub fn parse(src: &[u8]) -> Document {
+        let (frontmatter, body, error) = split(src);
+        Document {
+            frontmatter,
+            body,
+            error,
+        }
+    }
+}
+
 /// Separates the front matter of a markdown file from its body.
 ///
 /// A file with no front matter is not an error: `Frontmatter::present` is
 /// false and body is the whole file. A malformed block yields an `Error` and a
 /// best-effort body so token budgets can still be reported.
-pub fn split(src: &[u8]) -> (Frontmatter, String, Option<Error>) {
+fn split(src: &[u8]) -> (Frontmatter, String, Option<Error>) {
     let text = String::from_utf8_lossy(src);
     let text = text.strip_prefix(BOM).unwrap_or(&text).to_string();
     let lines: Vec<&str> = text.split('\n').collect();
@@ -301,7 +326,8 @@ mod tests {
     fn split_valid() {
         let src =
             "---\nname: my-skill\ndescription: Does a thing.\n---\n\n# Heading\n\nBody text.\n";
-        let (fm, body, err) = split(src.as_bytes());
+        let d = Document::parse(src.as_bytes());
+        let (fm, body, err) = (d.frontmatter, d.body, d.error);
         assert!(err.is_none());
         assert!(fm.present);
         assert_eq!(fm.keys(), &["name".to_string(), "description".to_string()]);
@@ -316,7 +342,8 @@ mod tests {
     #[test]
     fn split_no_frontmatter() {
         let src = "# Just markdown\n\nNo front matter here.\n";
-        let (fm, body, err) = split(src.as_bytes());
+        let d = Document::parse(src.as_bytes());
+        let (fm, body, err) = (d.frontmatter, d.body, d.error);
         assert!(err.is_none());
         assert!(!fm.present);
         assert_eq!(body, src);
@@ -325,7 +352,8 @@ mod tests {
     #[test]
     fn split_bom() {
         let src = "\u{feff}---\nname: bom-skill\n---\nbody\n";
-        let (fm, _, err) = split(src.as_bytes());
+        let d = Document::parse(src.as_bytes());
+        let (fm, _, err) = (d.frontmatter, d.body, d.error);
         assert!(err.is_none());
         assert_eq!(fm.string("name").as_deref(), Some("bom-skill"));
     }
@@ -333,7 +361,8 @@ mod tests {
     #[test]
     fn split_crlf() {
         let src = "---\r\nname: crlf-skill\r\n---\r\nbody\r\n";
-        let (fm, _, err) = split(src.as_bytes());
+        let d = Document::parse(src.as_bytes());
+        let (fm, _, err) = (d.frontmatter, d.body, d.error);
         assert!(err.is_none());
         assert_eq!(fm.string("name").as_deref(), Some("crlf-skill"));
     }
@@ -368,7 +397,8 @@ mod tests {
             ("empty block", "---\n---\nbody\n", ErrKind::NotMapping, 1),
         ];
         for (name, src, want_kind, want_line) in cases {
-            let (_, body, err) = split(src.as_bytes());
+            let d = Document::parse(src.as_bytes());
+            let (_, body, err) = (d.frontmatter, d.body, d.error);
             let err = err.unwrap_or_else(|| panic!("{name}: want an error"));
             assert_eq!(err.kind, *want_kind, "{name}: kind");
             assert_eq!(err.line, *want_line, "{name}: line (message: {})", err.msg);
@@ -410,7 +440,8 @@ mod tests {
             ),
         ];
         for (name, src, want) in cases {
-            let (fm, _, err) = split(src.as_bytes());
+            let d = Document::parse(src.as_bytes());
+            let (fm, _, err) = (d.frontmatter, d.body, d.error);
             assert!(err.is_none(), "{name}: {:?}", err.map(|e| e.msg));
             let got = fm.string_slice("allowed-tools");
             match want {
@@ -425,7 +456,8 @@ mod tests {
 
     #[test]
     fn accessors_on_absent_keys() {
-        let (fm, _, err) = split(b"---\nname: only-name\n---\n");
+        let d = Document::parse(b"---\nname: only-name\n---\n");
+        let (fm, _, err) = (d.frontmatter, d.body, d.error);
         assert!(err.is_none());
         assert!(!fm.has("license"));
         assert!(fm.node("license").is_none());
@@ -435,7 +467,8 @@ mod tests {
 
     #[test]
     fn node_kind() {
-        let (fm, _, err) = split(b"---\nmetadata:\n  owner: infra\n---\n");
+        let d = Document::parse(b"---\nmetadata:\n  owner: infra\n---\n");
+        let (fm, _, err) = (d.frontmatter, d.body, d.error);
         assert!(err.is_none());
         assert!(matches!(fm.node("metadata"), Some(Value::Mapping)));
     }

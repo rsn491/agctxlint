@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -12,6 +12,7 @@ use crate::discover::{Kind, Target};
 use crate::fence::FenceTracker;
 use crate::parse::{self, ErrKind, Frontmatter, Value};
 use crate::tokens::{self, Counter};
+use crate::utils::{clean_path, humanize};
 
 /// Marks how a finding affects the exit code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -161,15 +162,16 @@ impl FileResult {
     }
 }
 
-/// Collects findings, applying `--disable` and `--strict`.
-struct Reporter<'a> {
+/// Collects findings, applying `--disable` and `--strict`. Named for what it
+/// does rather than "Reporter", which the `report` module already means.
+struct FindingSink<'a> {
     findings: &'a mut Vec<Finding>,
     disabled: &'a HashSet<String>,
     strict: bool,
     path: &'a str,
 }
 
-impl Reporter<'_> {
+impl FindingSink<'_> {
     fn add(&mut self, rule: &str, mut sev: Severity, line: usize, msg: String) {
         if self.disabled.contains(rule) {
             return;
@@ -229,16 +231,17 @@ impl Linter {
     /// Lints already-read file contents. Findings are ordered by rule so
     /// output does not depend on the order the checks happen to run in.
     pub fn check(&self, t: &Target, src: &[u8]) -> FileResult {
-        let (fm, body, err) = parse::split(src);
+        let doc = parse::Document::parse(src);
+        let (fm, body, err) = (&doc.frontmatter, &doc.body, &doc.error);
         let mut tokens = Counts {
-            content: self.counter.count(&body),
+            content: self.counter.count(body),
             name: 0,
             description: 0,
         };
         let mut findings = Vec::new();
 
         {
-            let mut r = Reporter {
+            let mut r = FindingSink {
                 findings: &mut findings,
                 disabled: &self.disabled,
                 strict: self.cfg.strict,
@@ -246,8 +249,8 @@ impl Linter {
             };
 
             if t.kind == Kind::Skill {
-                self.check_skill(t, &fm, err.as_ref(), &mut r, &mut tokens);
-            } else if let Some(e) = &err
+                self.check_skill(t, fm, err.as_ref(), &mut r, &mut tokens);
+            } else if let Some(e) = err
                 && e.kind == ErrKind::Unterminated
             {
                 r.add(
@@ -258,7 +261,7 @@ impl Linter {
                 );
             }
 
-            self.check_file_references(t, &fm, &body, &mut r);
+            self.check_file_references(t, fm, body, &mut r);
 
             let limit = self.cfg.content_limit(t.kind);
             if limit > 0 && tokens.content as i64 > limit {
@@ -289,7 +292,7 @@ impl Linter {
         t: &Target,
         fm: &Frontmatter,
         err: Option<&parse::Error>,
-        r: &mut Reporter,
+        r: &mut FindingSink,
         tokens: &mut Counts,
     ) {
         if let Some(e) = err {
@@ -342,7 +345,7 @@ impl Linter {
         self.check_metadata(fm, r);
     }
 
-    fn check_name(&self, t: &Target, fm: &Frontmatter, r: &mut Reporter, tokens: &mut Counts) {
+    fn check_name(&self, t: &Target, fm: &Frontmatter, r: &mut FindingSink, tokens: &mut Counts) {
         let raw = fm.string("name");
         let name = raw.as_deref().unwrap_or("").trim().to_string();
         if raw.is_none() || name.is_empty() {
@@ -401,7 +404,7 @@ impl Linter {
         }
     }
 
-    fn check_description(&self, fm: &Frontmatter, r: &mut Reporter, tokens: &mut Counts) {
+    fn check_description(&self, fm: &Frontmatter, r: &mut FindingSink, tokens: &mut Counts) {
         let raw = fm.string("description");
         let desc = raw.as_deref().unwrap_or("").trim().to_string();
         if raw.is_none() || desc.is_empty() {
@@ -445,7 +448,7 @@ impl Linter {
         }
     }
 
-    fn check_allowed_tools(&self, fm: &Frontmatter, r: &mut Reporter) {
+    fn check_allowed_tools(&self, fm: &Frontmatter, r: &mut FindingSink) {
         if !fm.has("allowed-tools") {
             return;
         }
@@ -460,7 +463,7 @@ impl Linter {
         }
     }
 
-    fn check_metadata(&self, fm: &Frontmatter, r: &mut Reporter) {
+    fn check_metadata(&self, fm: &Frontmatter, r: &mut FindingSink) {
         match fm.node("metadata") {
             None | Some(Value::Mapping) => {}
             Some(_) => r.add(
@@ -482,7 +485,7 @@ impl Linter {
     /// and absolute paths: ctxlint often runs in CI over a checkout it does
     /// not trust, and stat-ing whatever path a file names would turn its
     /// markdown into a probe for what exists on the host.
-    fn check_file_references(&self, t: &Target, fm: &Frontmatter, body: &str, r: &mut Reporter) {
+    fn check_file_references(&self, t: &Target, fm: &Frontmatter, body: &str, r: &mut FindingSink) {
         let dir = Path::new(&t.path).parent().unwrap_or_else(|| Path::new(""));
         let root = self.abs_path(&t.root);
         let offset = if fm.present { fm.end_line } else { 0 };
@@ -605,32 +608,6 @@ fn code_span_target_path(raw: &str) -> Option<String> {
     Some(target.to_string())
 }
 
-fn clean_path(path: &Path) -> PathBuf {
-    let mut out: Vec<Component> = Vec::new();
-    for comp in path.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => match out.last() {
-                Some(Component::Normal(_)) => {
-                    out.pop();
-                }
-                Some(Component::RootDir) => {}
-                _ => out.push(comp),
-            },
-            other => out.push(other),
-        }
-    }
-    let mut result = PathBuf::new();
-    for c in out {
-        result.push(c.as_os_str());
-    }
-    if result.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        result
-    }
-}
-
 fn sort_findings(findings: &mut [Finding]) {
     findings.sort_by_key(|f| {
         RULE_ORDER
@@ -638,25 +615,6 @@ fn sort_findings(findings: &mut [Finding]) {
             .copied()
             .unwrap_or(usize::MAX)
     });
-}
-
-/// Renders n with thousands separators, so "6,142 tokens" reads at a glance
-/// in reports.
-fn humanize(n: i64) -> String {
-    let s = n.to_string();
-    if n < 0 {
-        return s;
-    }
-    let bytes = s.as_bytes();
-    let len = bytes.len();
-    let mut out = String::with_capacity(len + len / 3);
-    for (i, b) in bytes.iter().enumerate() {
-        if i > 0 && (len - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(*b as char);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -1085,21 +1043,6 @@ mod tests {
             root: base.path().to_path_buf(),
         };
         assert!(Linter::new(generous_config(), None).file(&target).is_err());
-    }
-
-    #[test]
-    fn humanize_formats_with_separators() {
-        let cases: &[(i64, &str)] = &[
-            (0, "0"),
-            (7, "7"),
-            (999, "999"),
-            (1000, "1,000"),
-            (6142, "6,142"),
-            (1234567, "1,234,567"),
-        ];
-        for (n, want) in cases {
-            assert_eq!(humanize(*n), *want, "humanize({n})");
-        }
     }
 
     #[test]

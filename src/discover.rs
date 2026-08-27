@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use glob::Pattern;
 
+use crate::utils::to_slash;
+
 /// Distinguishes the two file types ctxlint understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -160,10 +162,6 @@ fn compile_globs(globs: &[String]) -> Result<Vec<Pattern>, String> {
         .iter()
         .map(|g| Pattern::new(g).map_err(|e| format!("invalid exclude pattern {g:?}: {e}")))
         .collect()
-}
-
-fn to_slash(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]

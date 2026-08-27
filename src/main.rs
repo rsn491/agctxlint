@@ -9,6 +9,7 @@ mod lint;
 mod parse;
 mod report;
 mod tokens;
+mod utils;
 
 fn main() {
     use std::io::IsTerminal;

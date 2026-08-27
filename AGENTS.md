@@ -23,23 +23,34 @@ cargo test
 - `src/config.rs` — the `.ctxlint.yaml` loader and its discovery walk. Only
   budgets, `exclude` and `rules` are configurable there; see the module doc
   comment for why run-behavior flags are excluded.
-- `src/discover.rs` — turns paths into targets, prunes dependency directories.
-- `src/parse.rs` — splits YAML front matter from the body, keeping line numbers.
+- `src/discover.rs` — `Discoverer` turns paths into targets, pruning dependency
+  directories. Each `Target` carries the root it was found under.
+- `src/parse.rs` — `Document::parse` splits YAML front matter from the body,
+  keeping line numbers. `Document::mapping` is `Some` only when the block is
+  usable, which is how rules short-circuit on a malformed one.
+- `src/fence.rs` — `FenceTracker`, so fenced code blocks can be skipped.
 - `src/tokens.rs` — heuristic token estimator behind the `Counter` trait.
-- `src/lint.rs` — the rules.
-- `src/report.rs` — text and JSON renderers.
+- `src/lint/` — `Linter` measures token counts, then runs every registered
+  rule. `rule.rs` holds the `Rule` trait; `rules/` holds one struct per rule id
+  and `rules::all()`, the registry.
+- `src/report/` — the `Report` trait with `TextReporter` and `JsonReporter`.
+- `src/utils.rs` — helpers belonging to no module: `humanize`, `plural`,
+  `to_slash`, `clean_path`, `ceil_div`.
 
 ## Adding a rule
 
-1. Add its id constant in `src/lint.rs` and append it to `RULES`, which backs
-   both `--list-rules` and `--disable` validation.
-2. Implement the check, emitting through the `Reporter::add` method so
-   `--disable` and `--strict` keep working.
-3. Add a case to the table in `lint.rs`'s test module asserting the exact rule
-   ids the fixture produces.
-4. Document it in the README's rule table. Nothing else is needed for
-   `--disable` or the config file's `rules:` mapping: both validate against
-   `RULES`.
+1. Add its id constant in `src/lint/mod.rs`, then a struct implementing `Rule`
+   in the matching `src/lint/rules/` module. Emit through `FindingSink::error`
+   or `warn`; the sink knows which rule is running and handles `--strict`.
+   Override `applies_to` if the rule judges AGENTS.md too — the default is
+   SKILL.md only.
+2. Register it in `rules::all()` **at the position it should be reported**.
+   That order is the only place report order is written down: it drives
+   `RULES`, `--list-rules`, `--disable` validation, the config file's `rules:`
+   mapping, and the order findings appear in.
+3. Add a case to the table in `lint/mod.rs`'s test module asserting the exact
+   rule ids the fixture produces.
+4. Document it in the README's rule table.
 
 ## Adding a setting
 
@@ -55,6 +66,7 @@ comment.
 
 - Prefer errors for anything that breaks a file's contract with the runtime, and
   warnings for stylistic mismatches. Warnings alone exit 0.
-- Findings are sorted by rule order, never by the order checks happen to run in,
-  so output stays stable.
+- Findings come out in registry order because the rules run in that order, so
+  output never depends on the order checks happen to execute in. Nothing sorts
+  them afterwards; keep `rules::all()` in report order instead.
 - Comments explain why a check exists, not what the code does.

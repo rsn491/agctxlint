@@ -151,6 +151,15 @@ impl Document {
             error,
         }
     }
+    /// The front matter, but only when it is actually usable: present, parsed,
+    /// and a mapping. Rules that read keys go through this so a malformed
+    /// block short-circuits them uniformly.
+    pub fn mapping(&self) -> Option<&Frontmatter> {
+        if self.error.is_some() || !self.frontmatter.present {
+            return None;
+        }
+        Some(&self.frontmatter)
+    }
 }
 
 /// Separates the front matter of a markdown file from its body.

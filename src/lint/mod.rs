@@ -1,37 +1,22 @@
 //! Applies ctxlint's rules to agent instruction files.
 
-use std::collections::HashMap;
+pub mod rule;
+pub mod rules;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use regex::Regex;
-
 use crate::config::Config;
 use crate::discover::{Kind, Target};
-use crate::fence::FenceTracker;
-use crate::parse::{self, ErrKind, Frontmatter, Value};
+use crate::parse::{self, Document, ErrKind, Frontmatter};
 use crate::tokens::{self, Counter};
-use crate::utils::{clean_path, humanize};
+use crate::utils::clean_path;
 
-/// Marks how a finding affects the exit code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Error,
-    Warning,
-}
-
-impl std::fmt::Display for Severity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Severity::Error => write!(f, "error"),
-            Severity::Warning => write!(f, "warning"),
-        }
-    }
-}
-
-// Rule ids, usable with Config::disabled.
+// Rule ids. Listed here so callers -- and `--disable` -- can name a rule
+// without knowing which module implements it; each rule module imports the one
+// it answers to. Report order is NOT set here: that lives solely in the
+// registry, `rules::all`.
 pub const RULE_FRONTMATTER_MISSING: &str = "frontmatter.missing";
 pub const RULE_FRONTMATTER_NOT_FIRST: &str = "frontmatter.not-first";
 pub const RULE_FRONTMATTER_UNTERMINATED: &str = "frontmatter.unterminated";
@@ -50,69 +35,31 @@ pub const RULE_TOKENS_NAME: &str = "tokens.name";
 pub const RULE_TOKENS_DESCRIPTION: &str = "tokens.description";
 pub const RULE_FILE_REFERENCE_MISSING: &str = "file-reference.missing";
 
-/// Every rule id ctxlint can emit, in report order.
-pub const RULES: &[&str] = &[
-    RULE_FRONTMATTER_MISSING,
-    RULE_FRONTMATTER_NOT_FIRST,
-    RULE_FRONTMATTER_UNTERMINATED,
-    RULE_FRONTMATTER_INVALID,
-    RULE_FRONTMATTER_UNKNOWN_KEY,
-    RULE_NAME_REQUIRED,
-    RULE_NAME_FORMAT,
-    RULE_NAME_LENGTH,
-    RULE_NAME_DIR_MISMATCH,
-    RULE_DESCRIPTION_REQUIRED,
-    RULE_DESCRIPTION_LENGTH,
-    RULE_ALLOWED_TOOLS_TYPE,
-    RULE_METADATA_TYPE,
-    RULE_TOKENS_CONTENT,
-    RULE_TOKENS_NAME,
-    RULE_TOKENS_DESCRIPTION,
-    RULE_FILE_REFERENCE_MISSING,
-];
-
-static RULE_ORDER: LazyLock<HashMap<&'static str, usize>> =
-    LazyLock::new(|| RULES.iter().enumerate().map(|(i, r)| (*r, i)).collect());
-
 /// Limits from the Anthropic skill spec, in characters.
 pub const MAX_NAME_CHARS: usize = 64;
 pub const MAX_DESCRIPTION_CHARS: usize = 1024;
 
-/// The front-matter keys the skill spec defines, plus the Claude Code
-/// extensions ctxlint additionally supports. Anything else is reported as an
-/// unknown key.
-static KNOWN_KEYS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        "name",
-        "description",
-        "license",
-        "compatibility",
-        "metadata",
-        "allowed-tools",
-        "disable-model-invocation",
-        "argument-hint",
-    ]
-    .into_iter()
-    .collect()
-});
+/// Every rule id ctxlint can emit, in report order. Derived from the registry,
+/// so it cannot drift from the rules that actually run.
+pub static RULES: LazyLock<Vec<&'static str>> =
+    LazyLock::new(|| rules::all().iter().map(|r| r.id()).collect());
 
-/// The spec's naming rule: lowercase alphanumerics in hyphen-separated
-/// segments.
-static NAME_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-z0-9]+(?:-[a-z0-9]+)*$").unwrap());
+/// Marks how a finding affects the exit code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Error,
+    Warning,
+}
 
-/// Matches inline markdown links and images: `[text](target)` or
-/// `![alt](target)`. Does not handle reference-style links (`[text][ref]`).
-static LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!?\[[^\]]*\]\(([^)]+)\)").unwrap());
-
-/// Matches inline code spans: `` `text` ``. Fenced code blocks are excluded
-/// separately by the caller's in_fence tracking.
-static CODE_SPAN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`]+)`").unwrap());
-
-/// Detects an absolute URI (`https://`, `mailto:`, `tel:`, and the like) so
-/// those targets are left for a browser rather than checked as files.
-static URI_SCHEME_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-zA-Z][a-zA-Z0-9+.-]*:").unwrap());
+impl std::fmt::Display for Severity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Severity::Error => write!(f, "error"),
+            Severity::Warning => write!(f, "warning"),
+        }
+    }
+}
 
 /// A single rule violation.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -162,30 +109,105 @@ impl FileResult {
     }
 }
 
-/// Collects findings, applying `--disable` and `--strict`. Named for what it
-/// does rather than "Reporter", which the `report` module already means.
-struct FindingSink<'a> {
+/// Collects findings for the rule currently running, applying `--strict`.
+///
+/// Named for what it does rather than "Reporter", which the `report` module
+/// already means. The rule id comes from the sink rather than each call site,
+/// so a rule cannot file a finding under someone else's id.
+pub struct FindingSink<'a> {
     findings: &'a mut Vec<Finding>,
-    disabled: &'a HashSet<String>,
     strict: bool,
     path: &'a str,
+    rule: &'static str,
 }
 
 impl FindingSink<'_> {
-    fn add(&mut self, rule: &str, mut sev: Severity, line: usize, msg: String) {
-        if self.disabled.contains(rule) {
-            return;
-        }
+    /// Records a violation that should fail the build.
+    pub fn error(&mut self, line: usize, msg: String) {
+        self.add(Severity::Error, line, msg);
+    }
+
+    /// Records a stylistic mismatch. `--strict` promotes it to an error.
+    pub fn warn(&mut self, line: usize, msg: String) {
+        self.add(Severity::Warning, line, msg);
+    }
+
+    fn add(&mut self, mut sev: Severity, line: usize, msg: String) {
         if sev == Severity::Warning && self.strict {
             sev = Severity::Error;
         }
         self.findings.push(Finding {
             file: self.path.to_string(),
             line,
-            rule: rule.to_string(),
+            rule: self.rule.to_string(),
             severity: sev,
             message: msg,
         });
+    }
+}
+
+/// Everything a rule may look at for one file.
+///
+/// Rules read the working directory from here rather than from the process, so
+/// a verdict cannot depend on where the binary happened to be run.
+pub struct FileContext<'a> {
+    pub target: &'a Target,
+    pub doc: &'a Document,
+    pub tokens: &'a Counts,
+    pub cfg: &'a Config,
+    cwd: &'a Path,
+    name: Option<String>,
+    description: Option<String>,
+}
+
+impl FileContext<'_> {
+    /// The front matter, but only when it is usable: present, parsed, and a
+    /// mapping. Rules that read keys go through this, so a malformed block
+    /// short-circuits all of them the same way.
+    pub fn frontmatter(&self) -> Option<&Frontmatter> {
+        self.doc.mapping()
+    }
+
+    /// The skill's name: `Some` only when present and non-empty after
+    /// trimming. That is what keeps `name.format` and friends quiet while
+    /// `name.required` fires, without any rule knowing about the others.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// The skill's description, under the same rule as [`Self::name`].
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    /// The parse error, when it is of the given kind.
+    pub fn error_of(&self, kind: ErrKind) -> Option<&parse::Error> {
+        self.doc.error.as_ref().filter(|e| e.kind == kind)
+    }
+
+    /// Joins `path` onto the working directory when relative and lexically
+    /// normalizes it, without touching the filesystem or resolving symlinks
+    /// (mirroring Go's `filepath.Abs`).
+    pub fn abs_path(&self, path: &Path) -> PathBuf {
+        let joined = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cwd.join(path)
+        };
+        clean_path(&joined)
+    }
+
+    /// The name of the directory holding the skill file, or `None` when there
+    /// is no meaningful directory to match the name against: a loose skill
+    /// file in the working directory is named after the project, not the
+    /// skill.
+    pub fn skill_dir(&self) -> Option<String> {
+        let abs = self.abs_path(Path::new(&self.target.path));
+        let dir = abs.parent()?.to_path_buf();
+        if dir == clean_path(self.cwd) {
+            return None;
+        }
+        dir.file_name()?.to_str().map(str::to_string)
     }
 }
 
@@ -194,9 +216,8 @@ pub struct Linter {
     cfg: Config,
     counter: Box<dyn Counter>,
     disabled: HashSet<String>,
-    /// Resolved once, at construction. Rules read this instead of calling
-    /// `std::env::current_dir` themselves, so a rule's verdict cannot depend
-    /// on where the process happens to be when it runs.
+    /// Resolved once, at construction. Rules read this through FileContext
+    /// instead of calling `std::env::current_dir` themselves.
     cwd: PathBuf,
 }
 
@@ -228,57 +249,56 @@ impl Linter {
         Ok(self.check(t, &src))
     }
 
-    /// Lints already-read file contents. Findings are ordered by rule so
-    /// output does not depend on the order the checks happen to run in.
+    /// Lints already-read file contents.
+    ///
+    /// Rules run in registry order, so findings come out in that order without
+    /// a sort: output never depends on the order checks happen to run in.
     pub fn check(&self, t: &Target, src: &[u8]) -> FileResult {
-        let doc = parse::Document::parse(src);
-        let (fm, body, err) = (&doc.frontmatter, &doc.body, &doc.error);
-        let mut tokens = Counts {
-            content: self.counter.count(body),
-            name: 0,
-            description: 0,
-        };
-        let mut findings = Vec::new();
+        let doc = Document::parse(src);
 
+        // Only a skill has a name and description to be judged, so only a
+        // skill carries those token counts. Measured once here rather than as
+        // a side effect of validating them, which is what let the rules stop
+        // passing a mutable Counts around.
+        let fm = if t.kind == Kind::Skill {
+            doc.mapping()
+        } else {
+            None
+        };
+        let name = fm.and_then(|f| non_empty(f.string("name")));
+        let description = fm.and_then(|f| non_empty(f.string("description")));
+        let tokens = Counts {
+            content: self.counter.count(&doc.body),
+            name: name.as_deref().map_or(0, |s| self.counter.count(s)),
+            description: description.as_deref().map_or(0, |s| self.counter.count(s)),
+        };
+
+        let mut findings = Vec::new();
         {
-            let mut r = FindingSink {
+            let ctx = FileContext {
+                target: t,
+                doc: &doc,
+                tokens: &tokens,
+                cfg: &self.cfg,
+                cwd: &self.cwd,
+                name,
+                description,
+            };
+            let mut sink = FindingSink {
                 findings: &mut findings,
-                disabled: &self.disabled,
                 strict: self.cfg.strict,
                 path: &t.path,
+                rule: "",
             };
-
-            if t.kind == Kind::Skill {
-                self.check_skill(t, fm, err.as_ref(), &mut r, &mut tokens);
-            } else if let Some(e) = err
-                && e.kind == ErrKind::Unterminated
-            {
-                r.add(
-                    RULE_FRONTMATTER_UNTERMINATED,
-                    Severity::Error,
-                    e.line,
-                    e.msg.clone(),
-                );
-            }
-
-            self.check_file_references(t, fm, body, &mut r);
-
-            let limit = self.cfg.content_limit(t.kind);
-            if limit > 0 && tokens.content as i64 > limit {
-                r.add(
-                    RULE_TOKENS_CONTENT,
-                    Severity::Error,
-                    0,
-                    format!(
-                        "content is {} tokens, over the {} token limit",
-                        humanize(tokens.content as i64),
-                        humanize(limit)
-                    ),
-                );
+            for rule in rules::all() {
+                if !rule.applies_to(t.kind) || self.disabled.contains(rule.id()) {
+                    continue;
+                }
+                sink.rule = rule.id();
+                rule.check(&ctx, &mut sink);
             }
         }
 
-        sort_findings(&mut findings);
         FileResult {
             path: t.path.clone(),
             kind: t.kind,
@@ -286,335 +306,12 @@ impl Linter {
             findings,
         }
     }
-
-    fn check_skill(
-        &self,
-        t: &Target,
-        fm: &Frontmatter,
-        err: Option<&parse::Error>,
-        r: &mut FindingSink,
-        tokens: &mut Counts,
-    ) {
-        if let Some(e) = err {
-            match e.kind {
-                ErrKind::NotFirst => r.add(
-                    RULE_FRONTMATTER_NOT_FIRST,
-                    Severity::Error,
-                    e.line,
-                    e.msg.clone(),
-                ),
-                ErrKind::Unterminated => r.add(
-                    RULE_FRONTMATTER_UNTERMINATED,
-                    Severity::Error,
-                    e.line,
-                    e.msg.clone(),
-                ),
-                _ => r.add(
-                    RULE_FRONTMATTER_INVALID,
-                    Severity::Error,
-                    e.line,
-                    e.msg.clone(),
-                ),
-            }
-            return;
-        }
-        if !fm.present {
-            r.add(
-                RULE_FRONTMATTER_MISSING,
-                Severity::Error,
-                1,
-                "missing YAML front matter: a skill must open with a --- fenced block declaring name and description".to_string(),
-            );
-            return;
-        }
-
-        for key in fm.keys() {
-            if !KNOWN_KEYS.contains(key.as_str()) {
-                r.add(
-                    RULE_FRONTMATTER_UNKNOWN_KEY,
-                    Severity::Warning,
-                    fm.line(key),
-                    format!("unknown front-matter key {key:?}"),
-                );
-            }
-        }
-
-        self.check_name(t, fm, r, tokens);
-        self.check_description(fm, r, tokens);
-        self.check_allowed_tools(fm, r);
-        self.check_metadata(fm, r);
-    }
-
-    fn check_name(&self, t: &Target, fm: &Frontmatter, r: &mut FindingSink, tokens: &mut Counts) {
-        let raw = fm.string("name");
-        let name = raw.as_deref().unwrap_or("").trim().to_string();
-        if raw.is_none() || name.is_empty() {
-            r.add(
-                RULE_NAME_REQUIRED,
-                Severity::Error,
-                fm.line("name"),
-                "front matter must declare a non-empty string name".to_string(),
-            );
-            return;
-        }
-        tokens.name = self.counter.count(&name);
-        let line = fm.line("name");
-
-        if !NAME_RE.is_match(&name) {
-            r.add(
-                RULE_NAME_FORMAT,
-                Severity::Error,
-                line,
-                format!(
-                    "name {name:?} must be lowercase letters, digits and single hyphens (for example my-skill)"
-                ),
-            );
-        }
-        let n = name.chars().count();
-        if n > MAX_NAME_CHARS {
-            r.add(
-                RULE_NAME_LENGTH,
-                Severity::Error,
-                line,
-                format!("name is {n} characters, over the {MAX_NAME_CHARS} character limit"),
-            );
-        }
-        if let Some(dir) = self.skill_dir(&t.path)
-            && dir != name
-        {
-            r.add(
-                RULE_NAME_DIR_MISMATCH,
-                Severity::Warning,
-                line,
-                format!("name {name:?} does not match its directory {dir:?}"),
-            );
-        }
-        if self.cfg.max_skill_name_tokens > 0 && tokens.name as i64 > self.cfg.max_skill_name_tokens
-        {
-            r.add(
-                RULE_TOKENS_NAME,
-                Severity::Error,
-                line,
-                format!(
-                    "name is {} tokens, over the {} token limit",
-                    humanize(tokens.name as i64),
-                    humanize(self.cfg.max_skill_name_tokens)
-                ),
-            );
-        }
-    }
-
-    fn check_description(&self, fm: &Frontmatter, r: &mut FindingSink, tokens: &mut Counts) {
-        let raw = fm.string("description");
-        let desc = raw.as_deref().unwrap_or("").trim().to_string();
-        if raw.is_none() || desc.is_empty() {
-            r.add(
-                RULE_DESCRIPTION_REQUIRED,
-                Severity::Error,
-                fm.line("description"),
-                "front matter must declare a non-empty string description saying when to use the skill".to_string(),
-            );
-            return;
-        }
-        tokens.description = self.counter.count(&desc);
-        let line = fm.line("description");
-
-        let n = desc.chars().count();
-        if n > MAX_DESCRIPTION_CHARS {
-            r.add(
-                RULE_DESCRIPTION_LENGTH,
-                Severity::Error,
-                line,
-                format!(
-                    "description is {} characters, over the {} character limit",
-                    humanize(n as i64),
-                    humanize(MAX_DESCRIPTION_CHARS as i64)
-                ),
-            );
-        }
-        if self.cfg.max_skill_description_tokens > 0
-            && tokens.description as i64 > self.cfg.max_skill_description_tokens
-        {
-            r.add(
-                RULE_TOKENS_DESCRIPTION,
-                Severity::Error,
-                line,
-                format!(
-                    "description is {} tokens, over the {} token limit",
-                    humanize(tokens.description as i64),
-                    humanize(self.cfg.max_skill_description_tokens)
-                ),
-            );
-        }
-    }
-
-    fn check_allowed_tools(&self, fm: &Frontmatter, r: &mut FindingSink) {
-        if !fm.has("allowed-tools") {
-            return;
-        }
-        if fm.string_slice("allowed-tools").is_none() {
-            r.add(
-                RULE_ALLOWED_TOOLS_TYPE,
-                Severity::Error,
-                fm.line("allowed-tools"),
-                "allowed-tools must be a list of tool names or a comma-separated string"
-                    .to_string(),
-            );
-        }
-    }
-
-    fn check_metadata(&self, fm: &Frontmatter, r: &mut FindingSink) {
-        match fm.node("metadata") {
-            None | Some(Value::Mapping) => {}
-            Some(_) => r.add(
-                RULE_METADATA_TYPE,
-                Severity::Error,
-                fm.line("metadata"),
-                "metadata must be a mapping of keys to values".to_string(),
-            ),
-        }
-    }
-
-    /// Flags markdown links and path-shaped inline code spans whose target
-    /// looks like a local file but does not resolve to one, relative to the
-    /// linted file's directory. Applies to both AGENTS.md and SKILL.md, since
-    /// a dangling reference breaks the file's contract with the runtime
-    /// regardless of kind.
-    ///
-    /// References resolving outside the linted tree are left alone, like URLs
-    /// and absolute paths: ctxlint often runs in CI over a checkout it does
-    /// not trust, and stat-ing whatever path a file names would turn its
-    /// markdown into a probe for what exists on the host.
-    fn check_file_references(&self, t: &Target, fm: &Frontmatter, body: &str, r: &mut FindingSink) {
-        let dir = Path::new(&t.path).parent().unwrap_or_else(|| Path::new(""));
-        let root = self.abs_path(&t.root);
-        let offset = if fm.present { fm.end_line } else { 0 };
-
-        let mut fences = FenceTracker::default();
-        for (i, line) in body.split('\n').enumerate() {
-            if !fences.scan_line(line) {
-                continue;
-            }
-            let mut targets: Vec<String> = Vec::new();
-            for caps in LINK_RE.captures_iter(line) {
-                if let Some(target) = link_target_path(&caps[1]) {
-                    targets.push(target);
-                }
-            }
-            for caps in CODE_SPAN_RE.captures_iter(line) {
-                if let Some(target) = code_span_target_path(&caps[1])
-                    && !targets.contains(&target)
-                {
-                    targets.push(target);
-                }
-            }
-            for target in targets {
-                // Resolved lexically, so deciding whether a reference escapes
-                // the tree costs no filesystem access of its own.
-                let resolved = self.abs_path(&dir.join(&target));
-                if !resolved.starts_with(&root) {
-                    continue;
-                }
-                if std::fs::metadata(&resolved).is_err() {
-                    r.add(
-                        RULE_FILE_REFERENCE_MISSING,
-                        Severity::Error,
-                        offset + i + 1,
-                        format!("referenced file {target:?} does not exist"),
-                    );
-                }
-            }
-        }
-    }
-
-    /// Returns the name of the directory holding the skill file, or `None`
-    /// when there is no meaningful directory to match the name against: a
-    /// loose skill file in the working directory is named after the project,
-    /// not the skill.
-    fn skill_dir(&self, path: &str) -> Option<String> {
-        let abs = self.abs_path(Path::new(path));
-        let dir = abs.parent()?.to_path_buf();
-        if dir == clean_path(&self.cwd) {
-            return None;
-        }
-        dir.file_name()?.to_str().map(str::to_string)
-    }
-
-    /// Joins `path` onto the linter's working directory when relative and
-    /// lexically normalizes it, without touching the filesystem or resolving
-    /// symlinks (mirroring Go's `filepath.Abs`).
-    fn abs_path(&self, path: &Path) -> PathBuf {
-        let joined = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.cwd.join(path)
-        };
-        clean_path(&joined)
-    }
 }
 
-/// Extracts the file path a markdown link points at, or `None` when the link
-/// is not a checkable local file reference: an absolute URL, an in-page
-/// anchor, an absolute path, or a templated placeholder.
-fn link_target_path(raw: &str) -> Option<String> {
-    let mut target = raw.trim().to_string();
-    if let Some(rest) = target.strip_prefix('<')
-        && let Some(end) = rest.find('>')
-    {
-        target = rest[..end].to_string();
-    }
-    if let Some(sp) = target.find([' ', '\t']) {
-        target.truncate(sp);
-    }
-    if target.is_empty() || target.starts_with('#') {
-        return None;
-    }
-    if URI_SCHEME_RE.is_match(&target) || target.starts_with("//") {
-        return None;
-    }
-    if let Some(frag) = target.find(['#', '?']) {
-        target.truncate(frag);
-    }
-    if target.is_empty()
-        || Path::new(&target).is_absolute()
-        || target.contains(['{', '}', '$', '*'])
-    {
-        return None;
-    }
-    Some(target)
-}
-
-/// Extracts a checkable file path from an inline code span, or `None` when
-/// the span is not clearly a relative file reference. Narrowly scoped to
-/// avoid false positives on flags, identifiers, and shell snippets: the span
-/// must be a single whitespace-free token starting with `./` or `../` and
-/// ending in a file extension.
-fn code_span_target_path(raw: &str) -> Option<String> {
-    let target = raw.trim();
-    if target.is_empty() || target.chars().any(char::is_whitespace) {
-        return None;
-    }
-    if !(target.starts_with("./") || target.starts_with("../")) {
-        return None;
-    }
-    if target.contains(['{', '}', '$', '*', '#', '?']) {
-        return None;
-    }
-    let last_seg = target.rsplit('/').next().unwrap_or(target);
-    let (_, ext) = last_seg.rsplit_once('.')?;
-    if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return None;
-    }
-    Some(target.to_string())
-}
-
-fn sort_findings(findings: &mut [Finding]) {
-    findings.sort_by_key(|f| {
-        RULE_ORDER
-            .get(f.rule.as_str())
-            .copied()
-            .unwrap_or(usize::MAX)
-    });
+/// Trims a front-matter scalar, discarding it when nothing is left.
+fn non_empty(raw: Option<String>) -> Option<String> {
+    let s = raw?.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
 }
 
 #[cfg(test)]

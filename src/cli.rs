@@ -320,7 +320,7 @@ pub fn run(
         return EXIT_OK;
     }
     if f.list_rules {
-        for rule in lint::RULES {
+        for rule in lint::RULES.iter() {
             let _ = writeln!(stdout, "{rule}");
         }
         return EXIT_OK;
@@ -1038,7 +1038,7 @@ mod tests {
         assert_eq!(code, EXIT_OK);
         let listed: Vec<&str> = stdout.split_whitespace().collect();
         assert_eq!(listed.len(), lint::RULES.len());
-        for rule in lint::RULES {
+        for rule in lint::RULES.iter() {
             assert!(stdout.contains(rule), "{stdout}");
         }
     }

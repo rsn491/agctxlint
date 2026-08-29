@@ -26,11 +26,16 @@ pub async fn handle_lint(Json(req): Json<LintRequest>) -> Result<Json<Value>, Ap
 
     let result = handle_lint_inner(req).await;
 
-    let status = match &result {
-        Ok(_) => StatusCode::OK,
-        Err((status, _)) => *status,
-    };
-    println!("POST /lint url={url:?} status={}", status.as_u16());
+    match &result {
+        Ok(_) => println!("POST /lint url={url:?} status={}", StatusCode::OK.as_u16()),
+        Err((status, Json(body))) => {
+            let error = body.get("error").and_then(Value::as_str).unwrap_or("");
+            println!(
+                "POST /lint url={url:?} status={} error={error:?}",
+                status.as_u16()
+            );
+        }
+    }
 
     result
 }

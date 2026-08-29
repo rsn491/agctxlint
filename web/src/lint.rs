@@ -7,21 +7,58 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 const CLONE_TIMEOUT: Duration = Duration::from_secs(60);
 const LINT_TIMEOUT: Duration = Duration::from_secs(30);
 
+const GENERIC_ERROR: &str =
+    "Something went wrong while linting that repository. Please try again later.";
+const INVALID_URL_ERROR: &str = "That doesn't look like a valid GitHub repository URL. Expected format: https://github.com/<owner>/<repo>";
+
 #[derive(Deserialize)]
 pub struct LintRequest {
     url: String,
 }
 
-type ApiError = (StatusCode, Json<Value>);
+/// The detail behind an error never reaches the client: it may contain
+/// internal paths, subprocess stderr, or other implementation details.
+/// It's only ever logged server-side; the client gets `public_message`.
+pub struct ApiError {
+    status: StatusCode,
+    log_detail: String,
+    public_message: &'static str,
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.status, Json(json!({ "error": self.public_message }))).into_response()
+    }
+}
 
 pub async fn handle_lint(Json(req): Json<LintRequest>) -> Result<Json<Value>, ApiError> {
-    let clone_url = validate_github_url(&req.url).map_err(bad_request)?;
+    let url = req.url.clone();
+    println!("POST /lint url={url:?}");
+
+    let result = handle_lint_inner(req).await;
+
+    match &result {
+        Ok(_) => println!("POST /lint url={url:?} status={}", StatusCode::OK.as_u16()),
+        Err(err) => println!(
+            "POST /lint url={url:?} status={} error={:?}",
+            err.status.as_u16(),
+            err.log_detail
+        ),
+    }
+
+    result
+}
+
+async fn handle_lint_inner(req: LintRequest) -> Result<Json<Value>, ApiError> {
+    let clone_url =
+        validate_github_url(&req.url).map_err(|detail| bad_request(detail, INVALID_URL_ERROR))?;
 
     let dir = tempfile::TempDir::new()
         .map_err(|e| server_error(format!("failed to create temp dir: {e}")))?;
@@ -78,12 +115,20 @@ async fn clone_repo(url: &str, dest: &Path) -> Result<(), ApiError> {
 
     let output = tokio::time::timeout(CLONE_TIMEOUT, cmd.output())
         .await
-        .map_err(|_| bad_request("cloning the repository timed out".to_string()))?
+        .map_err(|_| {
+            bad_request(
+                "cloning the repository timed out",
+                "Cloning that repository timed out. Please try again.",
+            )
+        })?
         .map_err(|e| server_error(format!("failed to run git: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(bad_request(format!("git clone failed: {}", stderr.trim())));
+        return Err(bad_request(
+            format!("git clone failed: {}", stderr.trim()),
+            "Could not clone that repository. Make sure the URL points to a public GitHub repository.",
+        ));
     }
     Ok(())
 }
@@ -132,16 +177,18 @@ fn ctxlint_binary_path() -> PathBuf {
     PathBuf::from(name)
 }
 
-fn bad_request(message: impl Into<String>) -> ApiError {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({ "error": message.into() })),
-    )
+fn bad_request(log_detail: impl Into<String>, public_message: &'static str) -> ApiError {
+    ApiError {
+        status: StatusCode::BAD_REQUEST,
+        log_detail: log_detail.into(),
+        public_message,
+    }
 }
 
-fn server_error(message: impl Into<String>) -> ApiError {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({ "error": message.into() })),
-    )
+fn server_error(log_detail: impl Into<String>) -> ApiError {
+    ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        log_detail: log_detail.into(),
+        public_message: GENERIC_ERROR,
+    }
 }

@@ -89,7 +89,7 @@ Each file is rated 0–100 as the mean of three parts:
 | Part | How it rates |
 | --- | --- |
 | Front matter | Frontmatter rules that passed ÷ frontmatter rules applied |
-| Token budgets | 100 if within the budget, falling linearly to zero at 2x budget. A skill's `name` and `description` budgets average in with its body |
+| Token budgets | 100 if within the budget, dropping the further over it a file is, down to 0 at double the budget. E.g. 50% over budget scores 50. A skill's `name` and `description` budgets average in with its body |
 | File references | 100 if every checked reference resolves, 0 if any is broken |
 
 The run's score is the mean of the file scores.

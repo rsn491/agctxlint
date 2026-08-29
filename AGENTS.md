@@ -13,9 +13,12 @@ cargo test
 
 ## Layout
 
-- `src/main.rs` — entry point only; all logic lives in the other modules.
-- `src/cli.rs` — flags, orchestration, exit codes. `run` takes its writers as
-  arguments so tests drive the whole CLI in-process. The four token-budget
+- `src/main.rs` — a wrapper over `cli::run`; everything else lives in the
+  library rooted at `src/lib.rs`.
+- `src/cli.rs` — flags, orchestration, exit codes. `ArgParser` walks the
+  argument list; `Cli` is built from the merged settings and then executed, so
+  validation and execution stay apart. `run` takes its writers as arguments so
+  tests drive the whole CLI in-process. The four token-budget
   fields on `Flags` are `Option`s so an unset flag can fall through to the
   config file; `resolve` merges flags over the file over the defaults. Run
   behavior (`strict`, `quiet`, `format`, `color`) is flag-only and does not
@@ -36,6 +39,9 @@ cargo test
 - `src/report/` — the `Report` trait with `TextReporter` and `JsonReporter`.
 - `src/utils.rs` — helpers belonging to no module: `humanize`, `plural`,
   `to_slash`, `clean_path`, `ceil_div`.
+- `tests/cli.rs` — end-to-end tests driving `cli::run` over `testdata/`. Unit
+  tests live beside the code they cover; anything that runs the whole CLI
+  belongs here.
 - `web/` — the `ctxlint-web` crate: an axum server that clones a GitHub repo
   and runs the `ctxlint` binary over it. It listens on `HOST`/`PORT`
   (default `127.0.0.1:3000`); a container host wants `HOST=0.0.0.0`.
@@ -73,3 +79,8 @@ comment.
   output never depends on the order checks happen to execute in. Nothing sorts
   them afterwards; keep `rules::all()` in report order instead.
 - Comments explain why a check exists, not what the code does.
+- Usage the user asked for goes to stdout; diagnostics, including the usage
+  printed after a flag error, go to stderr.
+- A file that cannot be read is reported and skipped, not fatal: discovery and
+  linting are separate passes, so one bad path must not discard the whole run.
+  Errors raised during discovery are still usage errors and still exit 2.

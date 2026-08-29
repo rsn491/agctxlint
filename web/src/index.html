@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ctxlint</title>
+<style>
+  :root { color-scheme: light dark; }
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.5;
+  }
+
+  .site-header {
+    background: color-mix(in srgb, currentColor 4%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  }
+  .header-inner {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 1.1rem 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .wordmark {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: inherit;
+    text-decoration: none;
+  }
+  .wordmark::before {
+    content: "";
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 2px;
+    background: #2563eb;
+  }
+  .repo-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: #767676;
+    text-decoration: none;
+    font-size: 0.9rem;
+  }
+  .repo-link:hover { color: inherit; }
+  .repo-link svg { width: 1.15rem; height: 1.15rem; }
+
+  main { max-width: 860px; margin: 0 auto; padding: 1.75rem 1.25rem 3rem; }
+
+  p.lede { color: #767676; margin-top: 0; max-width: 56ch; }
+
+  .features { margin: 1.5rem 0 2rem; }
+  .features-label {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #767676;
+    margin-bottom: 0.6rem;
+  }
+  .features ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .features li {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    font-size: 0.95rem;
+  }
+  .features svg {
+    width: 1.1rem;
+    height: 1.1rem;
+    flex: none;
+    margin-top: 0.1rem;
+    color: #2563eb;
+  }
+
+  form { display: flex; gap: 0.5rem; margin: 1.5rem 0; }
+  .input-wrap { position: relative; flex: 1; }
+  .input-wrap svg {
+    position: absolute;
+    left: 0.6rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1.1rem;
+    height: 1.1rem;
+    color: #767676;
+    pointer-events: none;
+  }
+  input[type="url"] {
+    width: 100%;
+    padding: 0.5rem 0.7rem 0.5rem 2.2rem;
+    font-size: 1rem;
+    border: 1px solid #999;
+    border-radius: 6px;
+  }
+  button {
+    padding: 0.5rem 1.1rem;
+    font-size: 1rem;
+    border: none;
+    border-radius: 6px;
+    background: #2563eb;
+    color: white;
+    cursor: pointer;
+  }
+  button:disabled { background: #93b4f0; cursor: default; }
+  #status { margin: 1rem 0; }
+  #status.error { color: #b91c1c; }
+  .summary { font-weight: 600; margin: 1rem 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
+  th { color: #555; font-weight: 600; }
+  tr.error td.severity { color: #b91c1c; font-weight: 600; }
+  tr.warning td.severity { color: #b45309; font-weight: 600; }
+  .file-group { margin-top: 1.5rem; }
+  .file-group h3 { margin-bottom: 0.3rem; font-size: 1rem; font-family: monospace; }
+</style>
+</head>
+<body>
+<header class="site-header">
+  <div class="header-inner">
+    <span class="wordmark">ctxlint</span>
+    <a class="repo-link" href="https://github.com/rsn491/ctxlint" target="_blank" rel="noopener noreferrer" aria-label="View source on GitHub">
+      <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+      Source
+    </a>
+  </div>
+</header>
+
+<main>
+  <p class="lede">A linter for agent context files: AGENTS.md, skills, etc.; ensuring they're properly formatted and follow best practices.</p>
+
+  <div class="features">
+    <span class="features-label">Features</span>
+    <ul>
+      <li>
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 111.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z" clip-rule="evenodd"/></svg>
+        Detects broken references
+      </li>
+      <li>
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 111.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z" clip-rule="evenodd"/></svg>
+        Validates skill frontmatter
+      </li>
+      <li>
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 111.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z" clip-rule="evenodd"/></svg>
+        Validates token budgets for skills and AGENTS.md
+      </li>
+    </ul>
+  </div>
+
+  <form id="lint-form">
+    <div class="input-wrap">
+      <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+      <input type="url" id="url" name="url" placeholder="https://github.com/owner/repo" required>
+    </div>
+    <button type="submit" id="submit-btn">Lint</button>
+  </form>
+
+  <div id="status"></div>
+  <div id="results"></div>
+</main>
+
+<script>
+const form = document.getElementById('lint-form');
+const urlInput = document.getElementById('url');
+const submitBtn = document.getElementById('submit-btn');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  statusEl.className = '';
+  statusEl.textContent = 'Cloning and linting…';
+  resultsEl.innerHTML = '';
+  submitBtn.disabled = true;
+
+  try {
+    const res = await fetch('/lint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: urlInput.value.trim() }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      throw new Error(body.error || `request failed with status ${res.status}`);
+    }
+    statusEl.textContent = '';
+    renderReport(body);
+  } catch (err) {
+    statusEl.className = 'error';
+    statusEl.textContent = err.message;
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+function renderReport(report) {
+  const s = report.summary || {};
+  const summary = document.createElement('div');
+  summary.className = 'summary';
+  summary.textContent =
+    `${s.files ?? 0} file(s) checked, ` +
+    `${s.files_with_errors ?? 0} with errors, ` +
+    `${s.files_with_warnings ?? 0} with warnings`;
+  resultsEl.appendChild(summary);
+
+  const files = (report.files || []).filter(f => (f.findings || []).length > 0);
+  if (files.length === 0) {
+    const clean = document.createElement('p');
+    clean.textContent = 'No findings.';
+    resultsEl.appendChild(clean);
+    return;
+  }
+
+  for (const file of files) {
+    const group = document.createElement('div');
+    group.className = 'file-group';
+
+    const heading = document.createElement('h3');
+    heading.textContent = file.path;
+    group.appendChild(heading);
+
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>Line</th><th>Severity</th><th>Rule</th><th>Message</th></tr></thead>';
+    const tbody = document.createElement('tbody');
+    for (const finding of file.findings) {
+      const row = document.createElement('tr');
+      row.className = finding.severity;
+      row.innerHTML =
+        `<td>${finding.line ?? ''}</td>` +
+        `<td class="severity">${escapeHtml(finding.severity)}</td>` +
+        `<td>${escapeHtml(finding.rule)}</td>` +
+        `<td>${escapeHtml(finding.message)}</td>`;
+      tbody.appendChild(row);
+    }
+    table.appendChild(tbody);
+    group.appendChild(table);
+    resultsEl.appendChild(group);
+  }
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s ?? '';
+  return div.innerHTML;
+}
+</script>
+</body>
+</html>

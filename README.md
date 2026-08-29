@@ -1,11 +1,13 @@
 # ctxlint
 
-A linter for agents context: `AGENTS.md`, skills, etc.; ensuring it is properly formatted and follows best practices.
+A linter for agent context files: `AGENTS.md`, skills, etc.; ensuring they're properly formatted and follow best practices.
+
+Demo: [ctxlint.onrender.com](https://ctxlint.onrender.com/)
 
 Features:
 - Detects broken references
 - Validates skill frontmatter
-- Validates token budgets for skills and AGENTS.md 
+- Validates token budgets for skills and AGENTS.md
 
 ## Quick start
 

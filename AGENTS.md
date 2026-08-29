@@ -36,6 +36,9 @@ cargo test
 - `src/report/` — the `Report` trait with `TextReporter` and `JsonReporter`.
 - `src/utils.rs` — helpers belonging to no module: `humanize`, `plural`,
   `to_slash`, `clean_path`, `ceil_div`.
+- `web/` — the `ctxlint-web` crate: an axum server that clones a GitHub repo
+  and runs the `ctxlint` binary over it. It listens on `HOST`/`PORT`
+  (default `127.0.0.1:3000`); a container host wants `HOST=0.0.0.0`.
 
 ## Adding a rule
 

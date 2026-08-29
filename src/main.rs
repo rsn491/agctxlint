@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod discover;
 mod fence;
+mod init;
 mod lint;
 mod parse;
 mod report;
@@ -18,6 +19,7 @@ fn main() {
     let is_terminal = std::io::stdout().is_terminal();
     let code = cli::run(
         &args,
+        &mut std::io::stdin().lock(),
         &mut std::io::stdout(),
         &mut std::io::stderr(),
         is_terminal,

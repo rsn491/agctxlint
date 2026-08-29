@@ -14,12 +14,16 @@ cargo test --workspace
 ## Layout
 
 - `src/main.rs` — entry point only; all logic lives in the other modules.
-- `src/cli.rs` — flags, orchestration, exit codes. `run` takes its writers as
-  arguments so tests drive the whole CLI in-process. The four token-budget
-  fields on `Flags` are `Option`s so an unset flag can fall through to the
-  config file; `resolve` merges flags over the file over the defaults. Run
+- `src/cli.rs` — flags, orchestration, exit codes. `run` takes its stdin and
+  writers as arguments so tests drive the whole CLI in-process. The four
+  token-budget fields on `Flags` are `Option`s so an unset flag can fall
+  through to the config file; `resolve` merges flags over the file over the
+  defaults. Run
   behavior (`strict`, `quiet`, `format`, `color`) is flag-only and does not
   go through the config file.
+- `src/init.rs` — the `ctxlint init` wizard, dispatched from `cli::run` before
+  the flags are parsed. Its stdin, writers and target directory are arguments,
+  so tests drive it without touching the real stdin or the working directory.
 - `src/config.rs` — the `.ctxlint.yaml` loader and its discovery walk. Only
   budgets, `exclude` and `rules` are configurable there; see the module doc
   comment for why run-behavior flags are excluded.
@@ -69,8 +73,9 @@ cargo test --workspace
 A setting that belongs in a project's config file needs three edits: an
 `Option` field on `cli.rs`'s `Flags` plus its arm in `parse_args`, a key in
 `config.rs`'s `KNOWN_KEYS` and its arm in `parse`, and a line in `resolve` that
-picks flag over file over default. Document it in the README's flag table.
-Run-behavior settings (how a result is reported, not what counts as a
+picks flag over file over default. Add a prompt in `init.rs` and a line in its
+`render`, so the wizard keeps covering every key. Document it in the README's
+flag table. Run-behavior settings (how a result is reported, not what counts as a
 violation) belong on `Flags` alone, flag-only — see `config.rs`'s module doc
 comment.
 

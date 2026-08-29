@@ -84,7 +84,7 @@ Rules (along with token budgets and excludes) can also be set in a
 
 ## Score
 
-Every file, and the run, is rated 0–100 for how far off it is. See
+Every file, and the run, is rated 0–100. See
 [docs/scoring.md](docs/scoring.md) for how the score is computed.
 
 ## Running on CI

@@ -1,22 +1,11 @@
-//! ctxlint lints agent instruction files (AGENTS.md and SKILL.md) for
-//! front-matter correctness and token budget overruns.
+//! Command-line entry point. All logic lives in the library.
 
-mod cli;
-mod config;
-mod discover;
-mod fence;
-mod lint;
-mod parse;
-mod report;
-mod tokens;
-mod utils;
+use std::io::IsTerminal;
 
 fn main() {
-    use std::io::IsTerminal;
-
     let args: Vec<String> = std::env::args().skip(1).collect();
     let is_terminal = std::io::stdout().is_terminal();
-    let code = cli::run(
+    let code = ctxlint::cli::run(
         &args,
         &mut std::io::stdout(),
         &mut std::io::stderr(),

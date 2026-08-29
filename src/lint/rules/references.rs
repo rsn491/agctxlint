@@ -64,6 +64,7 @@ impl Rule for Missing {
                 if !resolved.starts_with(&root) {
                     continue;
                 }
+                sink.applies();
                 if std::fs::metadata(&resolved).is_err() {
                     sink.error(
                         offset + i + 1,

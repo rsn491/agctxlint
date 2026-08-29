@@ -40,6 +40,10 @@ impl Rule for Content {
 
     fn check(&self, ctx: &FileContext<'_>, sink: &mut FindingSink<'_>) {
         let limit = ctx.cfg.content_limit(ctx.target.kind);
+        if limit <= 0 {
+            return;
+        }
+        sink.applies();
         over_budget(sink, 0, "content", ctx.tokens.content, limit);
     }
 }
@@ -53,6 +57,10 @@ impl Rule for Name {
 
     fn check(&self, ctx: &FileContext<'_>, sink: &mut FindingSink<'_>) {
         let Some(fm) = ctx.frontmatter() else { return };
+        if ctx.cfg.max_skill_name_tokens <= 0 {
+            return;
+        }
+        sink.applies();
         over_budget(
             sink,
             fm.line("name"),
@@ -72,6 +80,10 @@ impl Rule for Description {
 
     fn check(&self, ctx: &FileContext<'_>, sink: &mut FindingSink<'_>) {
         let Some(fm) = ctx.frontmatter() else { return };
+        if ctx.cfg.max_skill_description_tokens <= 0 {
+            return;
+        }
+        sink.applies();
         over_budget(
             sink,
             fm.line("description"),

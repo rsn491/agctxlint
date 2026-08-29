@@ -19,6 +19,9 @@ pub struct Summary {
     pub files: usize,
     pub files_with_errors: usize,
     pub files_with_warnings: usize,
+    /// The mean of the per-file scores, so the run's rating is exactly the
+    /// average of the numbers printed above it. An empty run rates 100.
+    pub score: u8,
 }
 
 /// Counts, across results, how many files have at least one error or
@@ -29,6 +32,7 @@ pub fn summarize(results: &[FileResult]) -> Summary {
         files: results.len(),
         ..Default::default()
     };
+    let mut total: u32 = 0;
     for r in results {
         if r.errors() > 0 {
             s.files_with_errors += 1;
@@ -36,7 +40,14 @@ pub fn summarize(results: &[FileResult]) -> Summary {
         if r.warnings() > 0 {
             s.files_with_warnings += 1;
         }
+        total += u32::from(r.score);
     }
+    s.score = if results.is_empty() {
+        100
+    } else {
+        // Rounded half up, matching the per-file scores it averages.
+        ((total * 2 + results.len() as u32) / (results.len() as u32 * 2)) as u8
+    };
     s
 }
 
@@ -70,7 +81,10 @@ mod tests {
     use crate::discover::Kind;
     use crate::lint::Counts;
 
-    use super::text::{BOLD, ERROR_EMOJI, GREEN, OK_EMOJI, RED, RESET, WARNING_EMOJI, YELLOW};
+    use super::text::{
+        BOLD, ERROR_EMOJI, GREEN, OK_EMOJI, ORANGE, RED, RESET, TADA_EMOJI, WARNING_EMOJI, YELLOW,
+        paint_score,
+    };
 
     fn render_text(results: &[FileResult], quiet: bool, color: bool) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -98,6 +112,7 @@ mod tests {
                     name: 0,
                     description: 0,
                 },
+                score: 50,
                 findings: vec![Finding {
                     file: "AGENTS.md".to_string(),
                     line: 0,
@@ -114,6 +129,7 @@ mod tests {
                     name: 2,
                     description: 30,
                 },
+                score: 96,
                 findings: vec![Finding {
                     file: "skills/thing/SKILL.md".to_string(),
                     line: 2,
@@ -132,7 +148,8 @@ mod tests {
             Summary {
                 files: 2,
                 files_with_errors: 1,
-                files_with_warnings: 1
+                files_with_warnings: 1,
+                score: 73,
             }
         );
     }
@@ -143,14 +160,14 @@ mod tests {
         let out = String::from_utf8(buf).unwrap();
         let lines: Vec<&str> = out.trim_end_matches('\n').split('\n').collect();
         assert_eq!(lines.len(), 7, "{out}");
-        assert_eq!(lines[0], "AGENTS.md");
+        assert_eq!(lines[0], "AGENTS.md  50");
         assert!(
             lines[1].starts_with("  error: tokens.content: "),
             "{}",
             lines[1]
         );
         assert_eq!(lines[2], "");
-        assert_eq!(lines[3], "skills/thing/SKILL.md");
+        assert_eq!(lines[3], "skills/thing/SKILL.md  96");
         assert!(
             lines[4].starts_with("  2: warning: name.dir-mismatch: "),
             "{}",
@@ -159,8 +176,28 @@ mod tests {
         assert_eq!(lines[5], "");
         assert_eq!(
             lines[6],
-            "2 files checked, 1 file with errors, 1 file with warnings"
+            "2 files checked, 1 file with errors, 1 file with warnings, score 73"
         );
+    }
+
+    /// A file with nothing to report still earns a line, but a perfect score
+    /// is elided from its header since there's nothing to flag.
+    #[test]
+    fn text_lists_clean_files_without_a_perfect_score() {
+        let clean = vec![FileResult {
+            path: "skills/good/SKILL.md".to_string(),
+            kind: Kind::Skill,
+            tokens: Counts::default(),
+            score: 100,
+            findings: vec![],
+        }];
+        let out = String::from_utf8(render_text(&clean, false, false)).unwrap();
+        assert!(out.starts_with("skills/good/SKILL.md\n"), "{out}");
+        assert!(out.contains("score 100"), "{out}");
+
+        // --quiet keeps the terse view: no line for a file with nothing left.
+        let out = String::from_utf8(render_text(&clean, true, false)).unwrap();
+        assert!(!out.contains("skills/good/SKILL.md"), "{out}");
     }
 
     #[test]
@@ -176,7 +213,7 @@ mod tests {
         let buf = render_text(&[], false, false);
         assert_eq!(
             String::from_utf8(buf).unwrap(),
-            "0 files checked, 0 files with errors, 0 files with warnings\n"
+            "0 files checked, 0 files with errors, 0 files with warnings, score 100\n"
         );
     }
 
@@ -204,6 +241,37 @@ mod tests {
         assert!(!out.contains(YELLOW), "{out}");
     }
 
+    /// A green run score is the last thing on its line, and gets a tada to
+    /// celebrate it; plain text stays diff-friendly with no emoji added.
+    #[test]
+    fn text_color_green_run_score_gets_a_tada() {
+        let out = String::from_utf8(render_text(&[], false, true)).unwrap();
+        assert!(
+            out.trim_end()
+                .ends_with(&format!("100{RESET} {TADA_EMOJI}")),
+            "{out}"
+        );
+
+        let out = String::from_utf8(render_text(&[], false, false)).unwrap();
+        assert!(!out.contains(TADA_EMOJI), "{out}");
+    }
+
+    /// The tada is a run-summary flourish, not a per-file one: `results()`
+    /// has a file scored 96 (green band) but a 73 run score (yellow band),
+    /// so no tada should appear anywhere in the output.
+    #[test]
+    fn text_color_per_file_score_has_no_tada() {
+        let out = String::from_utf8(render_text(&results(), false, true)).unwrap();
+        assert!(!out.contains(TADA_EMOJI), "{out}");
+    }
+
+    /// A mid-range score bad enough to fall short of yellow still isn't the
+    /// worst band: it's painted orange rather than red.
+    #[test]
+    fn paint_score_orange_band() {
+        assert_eq!(paint_score(true, 60), format!("{ORANGE}60{RESET}"));
+    }
+
     #[test]
     fn json_output_shape() {
         let buf = render_json(&results(), false);
@@ -213,6 +281,9 @@ mod tests {
         assert_eq!(got["summary"]["files"], 2);
         assert_eq!(got["summary"]["files_with_errors"], 1);
         assert_eq!(got["summary"]["files_with_warnings"], 1);
+        assert_eq!(got["summary"]["score"], 73);
+        assert_eq!(got["files"][0]["score"], 50);
+        assert_eq!(got["files"][1]["score"], 96);
         assert_eq!(got["files"][1]["tokens"]["name"], 2);
         assert!(!String::from_utf8(buf).unwrap().contains("\"line\": 0"));
     }

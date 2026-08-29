@@ -38,7 +38,11 @@ impl Rule for Missing {
     }
 
     fn check(&self, ctx: &FileContext<'_>, sink: &mut FindingSink<'_>) {
-        if ctx.doc.error.is_some() || ctx.doc.frontmatter.present {
+        if ctx.doc.error.is_some() {
+            return;
+        }
+        sink.applies();
+        if ctx.doc.frontmatter.present {
             return;
         }
         sink.error(
@@ -107,6 +111,7 @@ impl Rule for UnknownKey {
 
     fn check(&self, ctx: &FileContext<'_>, sink: &mut FindingSink<'_>) {
         let Some(fm) = ctx.frontmatter() else { return };
+        sink.applies();
         for key in fm.keys() {
             if !KNOWN_KEYS.contains(key.as_str()) {
                 sink.warn(fm.line(key), format!("unknown front-matter key {key:?}"));

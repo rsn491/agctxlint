@@ -84,8 +84,15 @@ Rules (along with token budgets and excludes) can also be set in a
 
 ## Score
 
-Every file, and the run, is rated 0–100. See
-[docs/scoring.md](docs/scoring.md) for how the score is computed.
+Each file is rated 0–100 as the mean of three parts:
+
+| Part | How it rates |
+| --- | --- |
+| Front matter | Frontmatter rules that passed ÷ frontmatter rules applied |
+| Token budgets | 100 if within the budget, falling linearly to zero at 2x budget. A skill's `name` and `description` budgets average in with its body |
+| File references | 100 if every checked reference resolves, 0 if any is broken |
+
+The run's score is the mean of the file scores.
 
 ## Running on CI
 

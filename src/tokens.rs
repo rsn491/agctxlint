@@ -1,6 +1,8 @@
 //! Estimates how many tokens a piece of text costs a language model, without
 //! shipping a tokenizer vocabulary.
 
+use crate::utils::ceil_div;
+
 /// Reports the token cost of a string. The heuristic [`Estimator`] is the only
 /// implementation today; the trait is the seam where a real BPE tokenizer
 /// could be substituted without touching the lint rules.
@@ -91,10 +93,6 @@ impl Counter for Estimator {
 
 fn is_word_rune(r: char) -> bool {
     r.is_ascii_alphanumeric()
-}
-
-fn ceil_div(a: usize, b: usize) -> usize {
-    if a == 0 { 0 } else { a.div_ceil(b) }
 }
 
 #[cfg(test)]

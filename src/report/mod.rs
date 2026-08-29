@@ -1,8 +1,14 @@
 //! Renders lint results for humans and for machines.
 
+mod json;
+mod text;
+
 use std::io::{self, Write};
 
 use crate::lint::{FileResult, Finding, Severity};
+
+pub use json::JsonReporter;
+pub use text::TextReporter;
 
 /// Bumped when the JSON shape changes incompatibly.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -34,156 +40,22 @@ pub fn summarize(results: &[FileResult]) -> Summary {
     s
 }
 
-#[derive(serde::Serialize)]
-struct JsonReport<'a> {
-    version: u32,
-    files: Vec<std::borrow::Cow<'a, FileResult>>,
-    summary: Summary,
-}
-
-const RED: &str = "\x1b[31m";
-const YELLOW: &str = "\x1b[33m";
-const GREEN: &str = "\x1b[32m";
-const BOLD: &str = "\x1b[1m";
-const RESET: &str = "\x1b[0m";
-
-const ERROR_EMOJI: &str = "\u{274c}"; // ❌
-const WARNING_EMOJI: &str = "\u{26a0}\u{fe0f}"; // ⚠️
-const OK_EMOJI: &str = "\u{2705}"; // ✅
-
-/// Wraps `s` in an SGR color code when `color` is set; otherwise returns it
-/// unchanged.
-fn paint(color: bool, code: &str, s: &str) -> String {
-    if color {
-        format!("{code}{s}{RESET}")
-    } else {
-        s.to_string()
-    }
-}
-
-/// Groups findings under a header naming their file, so the path is not
-/// repeated on every line. Files with nothing to report (or nothing left
-/// after quiet filtering) are omitted entirely. A blank line separates file
-/// groups and sets the final summary line apart.
+/// One way of rendering a run.
 ///
-/// When `color` is set, severities are colorized and prefixed with a symbol;
-/// otherwise the output is plain text, unchanged from earlier versions so it
-/// stays friendly to grep and diffing.
-pub fn text(
-    w: &mut impl Write,
-    results: &[FileResult],
-    quiet: bool,
-    color: bool,
-) -> io::Result<()> {
-    for r in results {
-        let owned;
-        let findings: &[Finding] = if quiet {
-            owned = filter_errors(&r.findings);
-            &owned
-        } else {
-            &r.findings
-        };
-        if findings.is_empty() {
-            continue;
-        }
-        writeln!(w, "{}", paint(color, BOLD, &r.path))?;
-        for f in findings {
-            let location = if f.line > 0 {
-                format!("{}: ", f.line)
-            } else {
-                String::new()
-            };
-            let (emoji, code) = match f.severity {
-                Severity::Error => (ERROR_EMOJI, RED),
-                Severity::Warning => (WARNING_EMOJI, YELLOW),
-            };
-            let severity = paint(color, code, &f.severity.to_string());
-            if color {
-                writeln!(
-                    w,
-                    "  {location}{emoji} {severity}: {}: {}",
-                    f.rule, f.message
-                )?;
-            } else {
-                writeln!(w, "  {location}{severity}: {}: {}", f.rule, f.message)?;
-            }
-        }
-        writeln!(w)?;
-    }
-
-    let s = summarize(results);
-    let errors = plural(s.files_with_errors, "file with errors", "files with errors");
-    let warnings = plural(
-        s.files_with_warnings,
-        "file with warnings",
-        "files with warnings",
-    );
-    let errors = if s.files_with_errors > 0 {
-        paint(color, RED, &errors)
-    } else {
-        errors
-    };
-    let warnings = if s.files_with_warnings > 0 {
-        paint(color, YELLOW, &warnings)
-    } else {
-        warnings
-    };
-
-    if color {
-        let clean = s.files_with_errors == 0 && s.files_with_warnings == 0;
-        let status = if s.files_with_errors > 0 {
-            ERROR_EMOJI
-        } else if s.files_with_warnings > 0 {
-            WARNING_EMOJI
-        } else {
-            OK_EMOJI
-        };
-        let checked = plural(s.files, "file", "files");
-        let checked = if clean {
-            paint(color, GREEN, &checked)
-        } else {
-            checked
-        };
-        writeln!(w, "{status} {checked} checked, {errors}, {warnings}")?;
-    } else {
-        writeln!(
-            w,
-            "{} checked, {errors}, {warnings}",
-            plural(s.files, "file", "files")
-        )?;
-    }
-    Ok(())
+/// Each implementor owns its own switches, so a call site names what it wants
+/// once at construction instead of passing a row of positional bools that read
+/// as `text(w, &results, false, true)` at the point of use. `w` is a trait
+/// object so the reporters can be held as `dyn Report`.
+pub trait Report {
+    fn render(
+        &self,
+        w: &mut dyn Write,
+        results: &[FileResult],
+        summary: &Summary,
+    ) -> io::Result<()>;
 }
 
-/// Writes the whole run as a single object, sorted by path upstream so the
-/// output diffs cleanly between runs.
-pub fn json(w: &mut impl Write, results: &[FileResult], quiet: bool) -> io::Result<()> {
-    let files: Vec<std::borrow::Cow<FileResult>> = results
-        .iter()
-        .map(|r| {
-            if quiet {
-                std::borrow::Cow::Owned(FileResult {
-                    path: r.path.clone(),
-                    kind: r.kind,
-                    tokens: r.tokens.clone(),
-                    findings: filter_errors(&r.findings),
-                })
-            } else {
-                std::borrow::Cow::Borrowed(r)
-            }
-        })
-        .collect();
-
-    let report = JsonReport {
-        version: SCHEMA_VERSION,
-        files,
-        summary: summarize(results),
-    };
-    let mut buf = serde_json::to_vec_pretty(&report).map_err(io::Error::other)?;
-    buf.push(b'\n');
-    w.write_all(&buf)
-}
-
+/// Drops warnings, for `--quiet`.
 fn filter_errors(findings: &[Finding]) -> Vec<Finding> {
     findings
         .iter()
@@ -192,19 +64,29 @@ fn filter_errors(findings: &[Finding]) -> Vec<Finding> {
         .collect()
 }
 
-fn plural(n: usize, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("{n} {one}")
-    } else {
-        format!("{n} {many}")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::discover::Kind;
     use crate::lint::Counts;
+
+    use super::text::{BOLD, ERROR_EMOJI, GREEN, OK_EMOJI, RED, RESET, WARNING_EMOJI, YELLOW};
+
+    fn render_text(results: &[FileResult], quiet: bool, color: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+        TextReporter { quiet, color }
+            .render(&mut buf, results, &summarize(results))
+            .unwrap();
+        buf
+    }
+
+    fn render_json(results: &[FileResult], quiet: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+        JsonReporter { quiet }
+            .render(&mut buf, results, &summarize(results))
+            .unwrap();
+        buf
+    }
 
     fn results() -> Vec<FileResult> {
         vec![
@@ -257,8 +139,7 @@ mod tests {
 
     #[test]
     fn text_output_shape() {
-        let mut buf = Vec::new();
-        text(&mut buf, &results(), false, false).unwrap();
+        let buf = render_text(&results(), false, false);
         let out = String::from_utf8(buf).unwrap();
         let lines: Vec<&str> = out.trim_end_matches('\n').split('\n').collect();
         assert_eq!(lines.len(), 7, "{out}");
@@ -284,8 +165,7 @@ mod tests {
 
     #[test]
     fn text_quiet_suppresses_warnings() {
-        let mut buf = Vec::new();
-        text(&mut buf, &results(), true, false).unwrap();
+        let buf = render_text(&results(), true, false);
         let out = String::from_utf8(buf).unwrap();
         assert!(!out.contains("warning: "));
         assert!(out.contains("1 file with warnings"));
@@ -293,8 +173,7 @@ mod tests {
 
     #[test]
     fn text_singular_plural() {
-        let mut buf = Vec::new();
-        text(&mut buf, &[], false, false).unwrap();
+        let buf = render_text(&[], false, false);
         assert_eq!(
             String::from_utf8(buf).unwrap(),
             "0 files checked, 0 files with errors, 0 files with warnings\n"
@@ -303,8 +182,7 @@ mod tests {
 
     #[test]
     fn text_color_adds_symbols_and_sgr_codes() {
-        let mut buf = Vec::new();
-        text(&mut buf, &results(), false, true).unwrap();
+        let buf = render_text(&results(), false, true);
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains(ERROR_EMOJI), "{out}");
         assert!(out.contains(WARNING_EMOJI), "{out}");
@@ -318,8 +196,7 @@ mod tests {
 
     #[test]
     fn text_color_clean_run_shows_ok_emoji_and_green_count() {
-        let mut buf = Vec::new();
-        text(&mut buf, &[], false, true).unwrap();
+        let buf = render_text(&[], false, true);
         let out = String::from_utf8(buf).unwrap();
         assert!(out.starts_with(OK_EMOJI), "{out}");
         assert!(out.contains(GREEN), "{out}");
@@ -329,8 +206,7 @@ mod tests {
 
     #[test]
     fn json_output_shape() {
-        let mut buf = Vec::new();
-        json(&mut buf, &results(), false).unwrap();
+        let buf = render_json(&results(), false);
         let got: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert_eq!(got["version"], SCHEMA_VERSION);
         assert_eq!(got["files"].as_array().unwrap().len(), 2);
@@ -343,8 +219,7 @@ mod tests {
 
     #[test]
     fn json_quiet_suppresses_warnings() {
-        let mut buf = Vec::new();
-        json(&mut buf, &results(), true).unwrap();
+        let buf = render_json(&results(), true);
         let got: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         for file in got["files"].as_array().unwrap() {
             for finding in file["findings"].as_array().unwrap() {
@@ -357,8 +232,16 @@ mod tests {
     #[test]
     fn json_quiet_does_not_mutate_input() {
         let input = results();
-        let mut buf = Vec::new();
-        json(&mut buf, &input, true).unwrap();
+        let buf = render_json(&input, true);
+
+        // The rendered report drops the warning, but the caller's results are
+        // left intact -- quiet is a view, not an edit.
+        let got: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        for file in got["files"].as_array().unwrap() {
+            assert!(file["findings"].as_array().unwrap().is_empty() || file["path"] == "AGENTS.md");
+        }
+        assert_eq!(got["summary"]["files_with_warnings"], 1);
         assert_eq!(summarize(&input).files_with_warnings, 1);
+        assert_eq!(input[1].findings.len(), 1);
     }
 }

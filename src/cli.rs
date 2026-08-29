@@ -320,7 +320,7 @@ pub fn run(
         return EXIT_OK;
     }
     if f.list_rules {
-        for rule in lint::RULES {
+        for rule in lint::RULES.iter() {
             let _ = writeln!(stdout, "{rule}");
         }
         return EXIT_OK;
@@ -392,16 +392,18 @@ pub fn run(
         }
     }
 
-    let write_result = if f.format == "json" {
-        report::json(stdout, &results, f.quiet)
+    // Summarized once and handed to the reporter, rather than each reporter
+    // recomputing it and the exit code recomputing it again.
+    let summary = report::summarize(&results);
+    let reporter: Box<dyn report::Report> = if f.format == "json" {
+        Box::new(report::JsonReporter { quiet: f.quiet })
     } else {
-        report::text(
-            stdout,
-            &results,
-            f.quiet,
-            resolve_color(&f.color, is_terminal),
-        )
+        Box::new(report::TextReporter {
+            quiet: f.quiet,
+            color: resolve_color(&f.color, is_terminal),
+        })
     };
+    let write_result = reporter.render(stdout, &results, &summary);
     // A closed pipe is how `ctxlint . | head` ends, not a failure: report
     // whatever the findings warrant and stay quiet, rather than exiting like a
     // bad flag. Every other write failure is still worth reporting.
@@ -412,7 +414,7 @@ pub fn run(
         return EXIT_USAGE;
     }
 
-    if report::summarize(&results).files_with_errors > 0 {
+    if summary.files_with_errors > 0 {
         EXIT_FINDINGS
     } else {
         EXIT_OK
@@ -1038,7 +1040,7 @@ mod tests {
         assert_eq!(code, EXIT_OK);
         let listed: Vec<&str> = stdout.split_whitespace().collect();
         assert_eq!(listed.len(), lint::RULES.len());
-        for rule in lint::RULES {
+        for rule in lint::RULES.iter() {
             assert!(stdout.contains(rule), "{stdout}");
         }
     }

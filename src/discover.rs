@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use glob::Pattern;
 
+use crate::utils::to_slash;
+
 /// Distinguishes the two file types ctxlint understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -66,31 +68,48 @@ pub fn kind_for(path: &Path) -> Option<Kind> {
 /// The result is deduplicated by absolute path and sorted, so output is
 /// stable across runs.
 pub fn find(paths: &[String], excludes: &[String]) -> Result<Vec<Target>, String> {
-    let patterns = compile_globs(excludes)?;
+    let mut d = Discoverer::new(compile_globs(excludes)?);
+    d.collect(paths)?;
+    Ok(d.finish())
+}
 
-    let mut seen = HashSet::new();
-    let mut targets = Vec::new();
-    let mut add = |path: &Path, kind: Kind, root: &Path| {
-        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        if seen.insert(abs) {
-            targets.push(Target {
-                path: to_slash(path),
-                kind,
-                root: root.to_path_buf(),
-            });
+/// Accumulates targets across a walk.
+///
+/// The recursion used to thread a `&mut impl FnMut(&Path, Kind, &Path)` closure
+/// down every level just to push onto two locals; holding them here says the
+/// same thing without passing a callback through each frame.
+struct Discoverer {
+    patterns: Vec<Pattern>,
+    /// Absolute paths already added, so naming a file twice -- or naming it
+    /// and the directory holding it -- yields one target.
+    seen: HashSet<PathBuf>,
+    targets: Vec<Target>,
+}
+
+impl Discoverer {
+    fn new(patterns: Vec<Pattern>) -> Self {
+        Discoverer {
+            patterns,
+            seen: HashSet::new(),
+            targets: Vec::new(),
         }
-    };
+    }
 
-    for path in paths {
-        let path = Path::new(path);
-        let meta =
-            fs::metadata(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        if !meta.is_dir() {
+    /// Adds every target under `paths`.
+    fn collect(&mut self, paths: &[String]) -> Result<(), String> {
+        for path in paths {
+            let path = Path::new(path);
+            let meta =
+                fs::metadata(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            if meta.is_dir() {
+                self.walk(path, path)?;
+                continue;
+            }
             // A file named outright has no walk root, so it stands as its own:
             // its directory is the tree we were pointed at.
             let root = path.parent().unwrap_or(Path::new("."));
             match kind_for(path) {
-                Some(kind) => add(path, kind, root),
+                Some(kind) => self.add(path, kind, root),
                 None => {
                     return Err(format!(
                         "{} is not an AGENTS.md or SKILL.md",
@@ -98,54 +117,67 @@ pub fn find(paths: &[String], excludes: &[String]) -> Result<Vec<Target>, String
                     ));
                 }
             }
-            continue;
         }
-        walk(path, path, &patterns, &mut add)?;
+        Ok(())
     }
 
-    targets.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(targets)
-}
+    /// Returns the collected targets, sorted by path.
+    fn finish(mut self) -> Vec<Target> {
+        self.targets.sort_by(|a, b| a.path.cmp(&b.path));
+        self.targets
+    }
 
-fn walk(
-    root: &Path,
-    dir: &Path,
-    patterns: &[Pattern],
-    add: &mut impl FnMut(&Path, Kind, &Path),
-) -> Result<(), String> {
-    let mut entries: Vec<_> = fs::read_dir(dir)
-        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
-        .collect::<Result<_, _>>()
-        .map_err(|e: std::io::Error| format!("cannot read {}: {e}", dir.display()))?;
-    entries.sort_by_key(|e| e.file_name());
+    fn add(&mut self, path: &Path, kind: Kind, root: &Path) {
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        if self.seen.insert(abs) {
+            self.targets.push(Target {
+                path: to_slash(path),
+                kind,
+                root: root.to_path_buf(),
+            });
+        }
+    }
 
-    for entry in entries {
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let rel = || to_slash(path.strip_prefix(root).unwrap_or(&path));
+    fn walk(&mut self, root: &Path, dir: &Path) -> Result<(), String> {
+        let mut entries: Vec<_> = fs::read_dir(dir)
+            .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
+            .collect::<Result<_, _>>()
+            .map_err(|e: std::io::Error| format!("cannot read {}: {e}", dir.display()))?;
+        entries.sort_by_key(|e| e.file_name());
 
-        if file_type.is_dir() {
-            if SKIP_DIRS.contains(&name.as_ref())
-                || (!patterns.is_empty() && matches_any(patterns, &name, &rel()))
-            {
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let rel = || to_slash(path.strip_prefix(root).unwrap_or(&path));
+
+            if file_type.is_dir() {
+                if SKIP_DIRS.contains(&name.as_ref()) || self.excluded(&name, &rel) {
+                    continue;
+                }
+                self.walk(root, &path)?;
                 continue;
             }
-            walk(root, &path, patterns, add)?;
-            continue;
+            let Some(kind) = kind_for(&path) else {
+                continue;
+            };
+            if self.excluded(&name, &rel) {
+                continue;
+            }
+            self.add(&path, kind, root);
         }
-        let Some(kind) = kind_for(&path) else {
-            continue;
-        };
-        if !patterns.is_empty() && matches_any(patterns, &name, &rel()) {
-            continue;
-        }
-        add(&path, kind, root);
+        Ok(())
     }
-    Ok(())
+
+    /// Whether an entry matches any `--exclude` glob, by base name or by its
+    /// path relative to the walk root. `rel` is a closure so the relative path
+    /// is only built when there are patterns to match it against.
+    fn excluded(&self, name: &str, rel: &dyn Fn() -> String) -> bool {
+        !self.patterns.is_empty() && matches_any(&self.patterns, name, &rel())
+    }
 }
 
 fn matches_any(patterns: &[Pattern], name: &str, rel: &str) -> bool {
@@ -160,10 +192,6 @@ fn compile_globs(globs: &[String]) -> Result<Vec<Pattern>, String> {
         .iter()
         .map(|g| Pattern::new(g).map_err(|e| format!("invalid exclude pattern {g:?}: {e}")))
         .collect()
-}
-
-fn to_slash(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]

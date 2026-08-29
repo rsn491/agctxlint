@@ -47,13 +47,22 @@ cargo test
    or `warn`; the sink knows which rule is running and handles `--strict`.
    Override `applies_to` if the rule judges AGENTS.md too — the default is
    SKILL.md only.
-2. Register it in `rules::all()` **at the position it should be reported**.
+2. Give it a `Part` in `lint/mod.rs`'s `part`, and call `FindingSink::applies`
+   at the point in `check` where the rule's precondition holds, ahead of the
+   condition that fires it, so the rule lands in the score's denominator
+   whether or not it fires. Call it only where the rule really had something
+   to judge: a check skipped for this file must not count against it.
+   `error`/`warn` call it implicitly too, so a rule that fires is always
+   counted even if the check site forgot to call `applies` first.
+3. Register it in `rules::all()` **at the position it should be reported**.
    That order is the only place report order is written down: it drives
    `RULES`, `--list-rules`, `--disable` validation, the config file's `rules:`
    mapping, and the order findings appear in.
-3. Add a case to the table in `lint/mod.rs`'s test module asserting the exact
+4. Add a case to the table in `lint/mod.rs`'s test module asserting the exact
    rule ids the fixture produces.
-4. Document it in the README's rule table.
+5. Document it in the README's rule table. Nothing else is needed for
+   `--disable` or the config file's `rules:` mapping: both validate against
+   `RULES`.
 
 ## Adding a setting
 
@@ -72,4 +81,6 @@ comment.
 - Findings come out in registry order because the rules run in that order, so
   output never depends on the order checks happen to execute in. Nothing sorts
   them afterwards; keep `rules::all()` in report order instead.
+- A file's score rates only the checks that ran on it. A part with nothing to
+  judge drops out of the mean rather than scoring a free 100.
 - Comments explain why a check exists, not what the code does.

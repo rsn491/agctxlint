@@ -16,6 +16,7 @@ impl Rule for AllowedToolsType {
         if !fm.has("allowed-tools") {
             return;
         }
+        sink.applies();
         if fm.string_slice("allowed-tools").is_none() {
             sink.error(
                 fm.line("allowed-tools"),
@@ -35,12 +36,15 @@ impl Rule for MetadataType {
 
     fn check(&self, ctx: &FileContext<'_>, sink: &mut FindingSink<'_>) {
         let Some(fm) = ctx.frontmatter() else { return };
-        match fm.node("metadata") {
-            None | Some(Value::Mapping) => {}
-            Some(_) => sink.error(
+        let Some(node) = fm.node("metadata") else {
+            return;
+        };
+        sink.applies();
+        if !matches!(node, Value::Mapping) {
+            sink.error(
                 fm.line("metadata"),
                 "metadata must be a mapping of keys to values".to_string(),
-            ),
+            );
         }
     }
 }

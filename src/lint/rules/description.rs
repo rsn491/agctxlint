@@ -16,6 +16,7 @@ impl Rule for Required {
 
     fn check(&self, ctx: &FileContext<'_>, sink: &mut FindingSink<'_>) {
         let Some(fm) = ctx.frontmatter() else { return };
+        sink.applies();
         if ctx.description().is_none() {
             sink.error(
                 fm.line("description"),
@@ -36,6 +37,7 @@ impl Rule for Length {
         let (Some(fm), Some(desc)) = (ctx.frontmatter(), ctx.description()) else {
             return;
         };
+        sink.applies();
         let n = desc.chars().count();
         if n > MAX_DESCRIPTION_CHARS {
             sink.error(

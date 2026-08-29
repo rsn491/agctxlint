@@ -35,6 +35,7 @@ impl Report for JsonReporter {
                         path: r.path.clone(),
                         kind: r.kind,
                         tokens: r.tokens.clone(),
+                        score: r.score,
                         findings: filter_errors(&r.findings),
                     })
                 } else {

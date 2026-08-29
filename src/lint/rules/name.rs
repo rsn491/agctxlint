@@ -28,6 +28,7 @@ impl Rule for Required {
 
     fn check(&self, ctx: &FileContext<'_>, sink: &mut FindingSink<'_>) {
         let Some(fm) = ctx.frontmatter() else { return };
+        sink.applies();
         if ctx.name().is_none() {
             sink.error(
                 fm.line("name"),
@@ -48,6 +49,7 @@ impl Rule for Format {
         let (Some(fm), Some(name)) = (ctx.frontmatter(), ctx.name()) else {
             return;
         };
+        sink.applies();
         if !NAME_RE.is_match(name) {
             sink.error(
                 fm.line("name"),
@@ -70,6 +72,7 @@ impl Rule for Length {
         let (Some(fm), Some(name)) = (ctx.frontmatter(), ctx.name()) else {
             return;
         };
+        sink.applies();
         let n = name.chars().count();
         if n > MAX_NAME_CHARS {
             sink.error(
@@ -91,13 +94,14 @@ impl Rule for DirMismatch {
         let (Some(fm), Some(name)) = (ctx.frontmatter(), ctx.name()) else {
             return;
         };
-        if let Some(dir) = ctx.skill_dir()
-            && dir != name
-        {
-            sink.warn(
-                fm.line("name"),
-                format!("name {name:?} does not match its directory {dir:?}"),
-            );
+        if let Some(dir) = ctx.skill_dir() {
+            sink.applies();
+            if dir != name {
+                sink.warn(
+                    fm.line("name"),
+                    format!("name {name:?} does not match its directory {dir:?}"),
+                );
+            }
         }
     }
 }

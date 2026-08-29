@@ -575,6 +575,25 @@ mod tests {
     /// Runs the CLI with config discovery off, so these cases keep testing
     /// flags and defaults no matter what .ctxlint.yaml happens to sit above
     /// the directory the tests run in.
+    /// The files ctxlint reported a finding under. Every file gets a header
+    /// line carrying its score now, so a path appearing in the output is no
+    /// longer proof that a rule fired on it -- only an indented line below the
+    /// header is.
+    fn files_with_findings(stdout: &str) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        let mut header = "";
+        for line in stdout.split('\n') {
+            if line.starts_with("  ") {
+                if !header.is_empty() && !out.contains(&header) {
+                    out.push(header);
+                }
+            } else if let Some((path, _)) = line.rsplit_once("  ") {
+                header = path;
+            }
+        }
+        out
+    }
+
     fn run_args(args: &[&str]) -> (i32, String, String) {
         let mut with_flag = vec!["--no-config"];
         with_flag.extend_from_slice(args);
@@ -624,7 +643,7 @@ mod tests {
         let mut header = "";
         let mut name_format = "";
         for line in stdout.split('\n') {
-            if line.ends_with("SKILL.md") {
+            if line.contains("SKILL.md") && !line.starts_with("  ") {
                 header = line;
             }
             if line.contains(lint::RULE_NAME_FORMAT) {
@@ -650,16 +669,27 @@ mod tests {
         let files = got["files"].as_array().unwrap();
         assert_eq!(got["summary"]["files"], files.len() as u64);
         assert!(got["summary"]["files_with_errors"].as_u64().unwrap() > 0);
+        // A run over the broken fixtures must not rate perfect.
+        let run_score = got["summary"]["score"].as_u64().unwrap();
+        assert!(run_score < 100, "{stdout}");
 
         let mut paths = Vec::new();
+        let mut total = 0;
         for file in files {
             paths.push(file["path"].as_str().unwrap().to_string());
             assert!(!file["kind"].as_str().unwrap().is_empty());
+            let score = file["score"].as_u64().unwrap();
+            assert!(score <= 100, "{score}");
+            total += score;
             for finding in file["findings"].as_array().unwrap() {
                 assert_eq!(finding["file"], file["path"]);
                 assert!(!finding["message"].as_str().unwrap().is_empty());
             }
         }
+        // The run's score is the mean of the per-file scores it reports.
+        let files = files.len() as u64;
+        assert_eq!(run_score, (total * 2 + files) / (files * 2), "{stdout}");
+
         let mut sorted = paths.clone();
         sorted.sort();
         assert_eq!(paths, sorted);
@@ -693,10 +723,9 @@ mod tests {
             &clean,
         ]);
         assert_eq!(code, EXIT_FINDINGS, "{stdout}");
-        assert!(
-            stdout.contains("AGENTS.md") && !stdout.contains("SKILL.md"),
-            "{stdout}"
-        );
+        let flagged = files_with_findings(&stdout);
+        assert_eq!(flagged.len(), 1, "{stdout}");
+        assert!(flagged[0].ends_with("AGENTS.md"), "{stdout}");
 
         let (code, stdout, _) = run_args(&[
             "--max-agents-tokens",
@@ -706,10 +735,9 @@ mod tests {
             &clean,
         ]);
         assert_eq!(code, EXIT_FINDINGS, "{stdout}");
-        assert!(
-            stdout.contains("SKILL.md") && !stdout.contains("AGENTS.md"),
-            "{stdout}"
-        );
+        let flagged = files_with_findings(&stdout);
+        assert_eq!(flagged.len(), 1, "{stdout}");
+        assert!(flagged[0].ends_with("SKILL.md"), "{stdout}");
 
         let (code, stdout, _) = run_args(&[
             "--max-agents-tokens",
@@ -867,10 +895,9 @@ mod tests {
 
         let (code, stdout, stderr) = run_raw(&["--config", &cfg, &fixture(&["clean"])]);
         assert_eq!(code, EXIT_FINDINGS, "stdout={stdout} stderr={stderr}");
-        assert!(
-            stdout.contains("AGENTS.md") && !stdout.contains("SKILL.md"),
-            "{stdout}"
-        );
+        let flagged = files_with_findings(&stdout);
+        assert_eq!(flagged.len(), 1, "{stdout}");
+        assert!(flagged[0].ends_with("AGENTS.md"), "{stdout}");
     }
 
     #[test]

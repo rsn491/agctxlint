@@ -7,8 +7,8 @@ matter is parsed with `saphyr`, everything else is hand-rolled.
 
 ```sh
 cargo fmt --check       # must report nothing
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 ## Layout

@@ -159,7 +159,7 @@ mod tests {
         let buf = render_text(&results(), false, false);
         let out = String::from_utf8(buf).unwrap();
         let lines: Vec<&str> = out.trim_end_matches('\n').split('\n').collect();
-        assert_eq!(lines.len(), 7, "{out}");
+        assert_eq!(lines.len(), 10, "{out}");
         assert_eq!(lines[0], "AGENTS.md  50");
         assert!(
             lines[1].starts_with("  error: tokens.content: "),
@@ -174,9 +174,20 @@ mod tests {
             lines[4]
         );
         assert_eq!(lines[5], "");
-        assert_eq!(
-            lines[6],
-            "2 files checked, 1 file with errors, 1 file with warnings, score 73"
+        // The run's scorecard: a bordered box with the score/band on top and
+        // the file counts underneath.
+        assert!(
+            lines[6].starts_with('┌') && lines[6].ends_with('┐'),
+            "{out}"
+        );
+        assert!(lines[7].contains("73/100 · Worth a look"), "{out}");
+        assert!(
+            lines[8].contains("2 files checked, 1 file with errors, 1 file with warnings"),
+            "{out}"
+        );
+        assert!(
+            lines[9].starts_with('└') && lines[9].ends_with('┘'),
+            "{out}"
         );
     }
 
@@ -193,7 +204,7 @@ mod tests {
         }];
         let out = String::from_utf8(render_text(&clean, false, false)).unwrap();
         assert!(out.starts_with("skills/good/SKILL.md\n"), "{out}");
-        assert!(out.contains("score 100"), "{out}");
+        assert!(out.contains("100/100 · Healthy"), "{out}");
 
         // --quiet keeps the terse view: no line for a file with nothing left.
         let out = String::from_utf8(render_text(&clean, true, false)).unwrap();
@@ -211,9 +222,11 @@ mod tests {
     #[test]
     fn text_singular_plural() {
         let buf = render_text(&[], false, false);
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            "0 files checked, 0 files with errors, 0 files with warnings, score 100\n"
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("0/100 · Healthy"), "{out}");
+        assert!(
+            out.contains("0 files checked, 0 files with errors, 0 files with warnings"),
+            "{out}"
         );
     }
 
@@ -235,20 +248,27 @@ mod tests {
     fn text_color_clean_run_shows_ok_emoji_and_green_count() {
         let buf = render_text(&[], false, true);
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.starts_with(OK_EMOJI), "{out}");
+        assert!(out.contains(OK_EMOJI), "{out}");
         assert!(out.contains(GREEN), "{out}");
         assert!(!out.contains(RED), "{out}");
         assert!(!out.contains(YELLOW), "{out}");
     }
 
-    /// A green run score is the last thing on its line, and gets a tada to
-    /// celebrate it; plain text stays diff-friendly with no emoji added.
+    /// A green run score gets a tada right after its band label to celebrate
+    /// it; plain text stays diff-friendly with no emoji added.
     #[test]
     fn text_color_green_run_score_gets_a_tada() {
         let out = String::from_utf8(render_text(&[], false, true)).unwrap();
+        let header_line = out
+            .lines()
+            .find(|l| l.contains(TADA_EMOJI))
+            .unwrap_or_else(|| panic!("no line with a tada in:\n{out}"));
         assert!(
-            out.trim_end()
-                .ends_with(&format!("100{RESET} {TADA_EMOJI}")),
+            header_line
+                .trim_end()
+                .trim_end_matches('│')
+                .trim_end()
+                .ends_with(TADA_EMOJI),
             "{out}"
         );
 

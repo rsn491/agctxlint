@@ -8,7 +8,6 @@ Features:
 - Detects broken references
 - Validates skill frontmatter
 - Validates token budgets for skills and AGENTS.md
-- Rates every file, and the run, from 0 to 100
 
 ## Quick start
 
@@ -85,33 +84,8 @@ Rules (along with token budgets and excludes) can also be set in a
 
 ## Score
 
-Findings answer "did anything fire?". The score answers "how far off is this
-file?", so a near-clean file and a badly broken one do not read the same, and a
-repository can watch the number move over time.
-
-Every file is rated 0–100 as the mean of three parts:
-
-| Part | How it rates |
-| --- | --- |
-| Front matter | Frontmatter rules that passed ÷ frontmatter rules applied |
-| Token budgets | Full marks at or under the budget, then falling linearly to zero at twice it. A skill's `name` and `description` budgets average in with its body |
-| File references | 100 if every checked reference resolves, 0 if any is broken |
-
-A part with nothing to judge is left out of the mean rather than counted as
-perfect, so an inapplicable check cannot inflate a score. An `AGENTS.md` is
-rated on two parts, since ctxlint does not validate its front matter; a file
-naming no checkable reference is rated without that part; a budget set to `0` is
-switched off and does not count. A file with nothing applicable at all rates
-100.
-
-A rule counts once however often it fires — three unknown keys cost the same as
-one. A rule switched off with `--disable` was never applied, so it leaves the
-fraction entirely and the score rates the policy the run was configured with, as
-it already does for that run's token budgets. `--strict` does not move the
-score: it changes severities, and the score counts pass and fail.
-
-The run's score is the mean of the file scores. Both appear in the text report
-and as `score` fields in `--format json`. Neither affects the exit code.
+Every file, and the run, is rated 0–100 for how far off it is. See
+[docs/scoring.md](docs/scoring.md) for how the score is computed.
 
 ## Running on CI
 

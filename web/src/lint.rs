@@ -21,6 +21,21 @@ pub struct LintRequest {
 type ApiError = (StatusCode, Json<Value>);
 
 pub async fn handle_lint(Json(req): Json<LintRequest>) -> Result<Json<Value>, ApiError> {
+    let url = req.url.clone();
+    println!("POST /lint url={url:?}");
+
+    let result = handle_lint_inner(req).await;
+
+    let status = match &result {
+        Ok(_) => StatusCode::OK,
+        Err((status, _)) => *status,
+    };
+    println!("POST /lint url={url:?} status={}", status.as_u16());
+
+    result
+}
+
+async fn handle_lint_inner(req: LintRequest) -> Result<Json<Value>, ApiError> {
     let clone_url = validate_github_url(&req.url).map_err(bad_request)?;
 
     let dir = tempfile::TempDir::new()

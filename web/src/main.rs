@@ -44,3 +44,26 @@ fn bind_addr() -> String {
 async fn index() -> Html<&'static str> {
     Html(include_str!("index.html"))
 }
+
+#[cfg(test)]
+mod tests {
+    /// The page reads the report's scores straight out of the `/lint` JSON, so
+    /// a rename on the Rust side would silently blank the score widgets. Pin
+    /// the field names and the band classes the page depends on.
+    #[test]
+    fn index_renders_the_report_scores() {
+        let html = include_str!("index.html");
+        for needle in [
+            "summary.score",
+            "file.score",
+            "score-card",
+            "score-badge",
+            "score-green",
+            "score-yellow",
+            "score-orange",
+            "score-red",
+        ] {
+            assert!(html.contains(needle), "index.html is missing {needle:?}");
+        }
+    }
+}

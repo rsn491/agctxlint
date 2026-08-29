@@ -5,7 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ctxlint</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light dark;
+    /* The score bands, mirroring score_color in src/report/text.rs. */
+    --score-green: #15803d;
+    --score-yellow: #a16207;
+    --score-orange: #c2410c;
+    --score-red: #b91c1c;
+  }
+  /* The page follows the OS theme, so the bands need a lighter set to stay
+     legible on a dark background. */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --score-green: #4ade80;
+      --score-yellow: #facc15;
+      --score-orange: #fb923c;
+      --score-red: #f87171;
+    }
+  }
   *, *::before, *::after { box-sizing: border-box; }
   body {
     margin: 0;
@@ -59,7 +76,7 @@
   p.lede { color: #767676; margin-top: 0; max-width: 56ch; }
 
   .features { margin: 1.5rem 0 2rem; }
-  .features-label {
+  .features-label, .score-label {
     display: block;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.75rem;
@@ -122,14 +139,71 @@
   button:disabled { background: #93b4f0; cursor: default; }
   #status { margin: 1rem 0; }
   #status.error { color: #b91c1c; }
-  .summary { font-weight: 600; margin: 1rem 0; }
+
+  /* The run's score, first thing in the results. */
+  .score-card {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem 1.5rem;
+    margin: 1.5rem 0;
+    padding: 1.1rem 1.25rem;
+    background: color-mix(in srgb, currentColor 4%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+    border-radius: 6px;
+  }
+  .score-label { margin-bottom: 0.35rem; }
+  .score-value {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 2.75rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    color: var(--score-band);
+  }
+  .score-out-of { font-size: 1rem; font-weight: 400; color: #767676; }
+  .score-band-label {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--score-band);
+  }
+  .score-meta { color: #767676; font-size: 0.9rem; }
+
+  .score-badge {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    line-height: 1;
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    color: var(--score-band);
+    background: color-mix(in srgb, var(--score-band) 14%, transparent);
+  }
+
+  .score-green { --score-band: var(--score-green); }
+  .score-yellow { --score-band: var(--score-yellow); }
+  .score-orange { --score-band: var(--score-orange); }
+  .score-red { --score-band: var(--score-red); }
+
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
   th { color: #555; font-weight: 600; }
   tr.error td.severity { color: #b91c1c; font-weight: 600; }
   tr.warning td.severity { color: #b45309; font-weight: 600; }
   .file-group { margin-top: 1.5rem; }
-  .file-group h3 { margin-bottom: 0.3rem; font-size: 1rem; font-family: monospace; }
+  .file-group h3 {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.3rem;
+    font-size: 1rem;
+    font-family: monospace;
+  }
 </style>
 </head>
 <body>
@@ -163,6 +237,10 @@
         <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 111.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z" clip-rule="evenodd"/></svg>
         Validates token budgets for skills and AGENTS.md
       </li>
+      <li>
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 111.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z" clip-rule="evenodd"/></svg>
+        Rates every file, and the run, from 0 to 100
+      </li>
     </ul>
   </div>
 
@@ -186,6 +264,16 @@ const urlInput = document.getElementById('url');
 const submitBtn = document.getElementById('submit-btn');
 const statusEl = document.getElementById('status');
 const resultsEl = document.getElementById('results');
+
+// The score bands, mirroring score_color in src/report/text.rs so the web
+// report reads a score exactly as the CLI does. Ordered high to low; the
+// labels come from that function's doc comment.
+const SCORE_BANDS = [
+  { min: 90, cls: 'score-green', label: 'Healthy' },
+  { min: 70, cls: 'score-yellow', label: 'Worth a look' },
+  { min: 50, cls: 'score-orange', label: 'Needs work' },
+  { min: 0, cls: 'score-red', label: 'Wants work' },
+];
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -214,49 +302,123 @@ form.addEventListener('submit', async (e) => {
   }
 });
 
+// A score the report did not carry is not worth guessing at: return null so
+// callers can leave the widget out rather than render a NaN.
+function normalizeScore(score) {
+  const n = Number(score);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(100, Math.max(0, Math.round(n)));
+}
+
+function scoreBand(score) {
+  return SCORE_BANDS.find(b => score >= b.min) ?? SCORE_BANDS[SCORE_BANDS.length - 1];
+}
+
 function renderReport(report) {
   const s = report.summary || {};
-  const summary = document.createElement('div');
-  summary.className = 'summary';
-  summary.textContent =
-    `${s.files ?? 0} file(s) checked, ` +
-    `${s.files_with_errors ?? 0} with errors, ` +
-    `${s.files_with_warnings ?? 0} with warnings`;
-  resultsEl.appendChild(summary);
+  resultsEl.appendChild(scoreCard(s));
 
-  const files = (report.files || []).filter(f => (f.findings || []).length > 0);
+  // A file with nothing to report is still worth listing when it did not
+  // score a perfect 100, the same call TextReporter makes.
+  const files = (report.files || [])
+    .filter(f => (f.findings || []).length > 0 || (normalizeScore(f.score) ?? 100) < 100);
   if (files.length === 0) {
     const clean = document.createElement('p');
-    clean.textContent = 'No findings.';
+    clean.textContent = 'Nothing to report — every file scored 100.';
     resultsEl.appendChild(clean);
     return;
   }
 
   for (const file of files) {
-    const group = document.createElement('div');
-    group.className = 'file-group';
-
-    const heading = document.createElement('h3');
-    heading.textContent = file.path;
-    group.appendChild(heading);
-
-    const table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th>Line</th><th>Severity</th><th>Rule</th><th>Message</th></tr></thead>';
-    const tbody = document.createElement('tbody');
-    for (const finding of file.findings) {
-      const row = document.createElement('tr');
-      row.className = finding.severity;
-      row.innerHTML =
-        `<td>${finding.line ?? ''}</td>` +
-        `<td class="severity">${escapeHtml(finding.severity)}</td>` +
-        `<td>${escapeHtml(finding.rule)}</td>` +
-        `<td>${escapeHtml(finding.message)}</td>`;
-      tbody.appendChild(row);
-    }
-    table.appendChild(tbody);
-    group.appendChild(table);
-    resultsEl.appendChild(group);
+    resultsEl.appendChild(fileGroup(file));
   }
+}
+
+// The run's score, leading the results: it is the one number that answers
+// "how healthy is this repo's context?".
+function scoreCard(summary) {
+  const card = document.createElement('div');
+  card.className = 'score-card';
+
+  const score = normalizeScore(summary.score);
+  if (score !== null) {
+    const band = scoreBand(score);
+    card.classList.add(band.cls);
+
+    const headline = document.createElement('div');
+
+    const label = document.createElement('span');
+    label.className = 'score-label';
+    label.textContent = 'Score';
+
+    const value = document.createElement('span');
+    value.className = 'score-value';
+    value.textContent = String(score);
+    const outOf = document.createElement('span');
+    outOf.className = 'score-out-of';
+    outOf.textContent = '/100';
+    value.appendChild(outOf);
+
+    const bandLabel = document.createElement('span');
+    bandLabel.className = 'score-band-label';
+    bandLabel.textContent = band.label;
+
+    headline.append(label, value, bandLabel);
+    card.appendChild(headline);
+  }
+
+  const files = summary.files ?? 0;
+  const meta = document.createElement('div');
+  meta.className = 'score-meta';
+  meta.textContent =
+    `${files} ${files === 1 ? 'file' : 'files'} checked · ` +
+    `${summary.files_with_errors ?? 0} with errors · ` +
+    `${summary.files_with_warnings ?? 0} with warnings`;
+  card.appendChild(meta);
+
+  return card;
+}
+
+function fileGroup(file) {
+  const group = document.createElement('div');
+  group.className = 'file-group';
+
+  const heading = document.createElement('h3');
+  const path = document.createElement('span');
+  path.textContent = file.path;
+  heading.appendChild(path);
+
+  const score = normalizeScore(file.score);
+  if (score !== null) {
+    const badge = document.createElement('span');
+    badge.className = `score-badge ${scoreBand(score).cls}`;
+    badge.textContent = String(score);
+    badge.title = `Score ${score} of 100`;
+    heading.appendChild(badge);
+  }
+  group.appendChild(heading);
+
+  const findings = file.findings || [];
+  if (findings.length === 0) {
+    return group;
+  }
+
+  const table = document.createElement('table');
+  table.innerHTML = '<thead><tr><th>Line</th><th>Severity</th><th>Rule</th><th>Message</th></tr></thead>';
+  const tbody = document.createElement('tbody');
+  for (const finding of findings) {
+    const row = document.createElement('tr');
+    row.className = finding.severity;
+    row.innerHTML =
+      `<td>${finding.line ?? ''}</td>` +
+      `<td class="severity">${escapeHtml(finding.severity)}</td>` +
+      `<td>${escapeHtml(finding.rule)}</td>` +
+      `<td>${escapeHtml(finding.message)}</td>`;
+    tbody.appendChild(row);
+  }
+  table.appendChild(tbody);
+  group.appendChild(table);
+  return group;
 }
 
 function escapeHtml(s) {

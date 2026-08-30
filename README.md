@@ -25,6 +25,7 @@ ctxlint .
 
 ```sh
 ctxlint [flags] [path...]
+ctxlint init [--force]
 ```
 
 Paths may be files or directories. Directories are walked recursively for
@@ -78,9 +79,25 @@ Switch any of them off by id:
 ctxlint --disable name.dir-mismatch --disable frontmatter.unknown-key .
 ```
 
-Rules (along with token budgets and excludes) can also be set in a
-`.ctxlint.yaml` config file instead of passing flags every time — see
-[`.ctxlint.yaml`](.ctxlint.yaml) for an example.
+## Configuration
+
+Rules, token budgets and excludes can be pinned in a `.ctxlint.yaml` config
+file instead of passing flags every time. `ctxlint init` writes one for you,
+asking about each setting in turn:
+
+```sh
+ctxlint init
+```
+
+Blank answers keep a setting's default, and an existing config is left alone
+unless `--force` is given. See [`.ctxlint.yaml`](.ctxlint.yaml) for what the
+result looks like.
+
+The nearest `.ctxlint.yaml` (or `.ctxlint.yml`) at or above the working
+directory is the one that applies, so running ctxlint from a subdirectory
+still picks up the repository's settings. Flags win over the file, and
+`--exclude`/`--disable` add to what the file already asked for rather than
+replacing it.
 
 ## Score
 

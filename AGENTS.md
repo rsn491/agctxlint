@@ -14,6 +14,9 @@ cargo test --workspace
 ## Layout
 
 - `src/main.rs` — entry point only; all logic lives in the other modules.
+- `src/lib.rs` — the module list. The crate is a library as well as a binary so
+  `web/` can read settings such as the default budgets from it rather than
+  restating numbers that would drift.
 - `src/cli.rs` — flags, orchestration, exit codes. `run` takes its writers as
   arguments so tests drive the whole CLI in-process. The four token-budget
   fields on `Flags` are `Option`s so an unset flag can fall through to the
@@ -38,7 +41,10 @@ cargo test --workspace
   `to_slash`, `clean_path`, `ceil_div`.
 - `web/` — the `ctxlint-web` crate: an axum server that clones a GitHub repo
   and runs the `ctxlint` binary over it. It listens on `HOST`/`PORT`
-  (default `127.0.0.1:3000`); a container host wants `HOST=0.0.0.0`.
+  (default `127.0.0.1:3000`); a container host wants `HOST=0.0.0.0`. `lint.rs`'s
+  `Budgets` turns the form's token budgets into `--max-*` flags; `main.rs`
+  substitutes the defaults into `index.html`'s `{{BUDGET_SETTINGS}}` at render
+  time, so the form opens on the linter's own numbers.
 
 ## Adding a rule
 
@@ -69,7 +75,9 @@ cargo test --workspace
 A setting that belongs in a project's config file needs three edits: an
 `Option` field on `cli.rs`'s `Flags` plus its arm in `parse_args`, a key in
 `config.rs`'s `KNOWN_KEYS` and its arm in `parse`, and a line in `resolve` that
-picks flag over file over default. Document it in the README's flag table.
+picks flag over file over default. Document it in the README's flag table. A
+token budget needs two more: a field on `web/src/lint.rs`'s `Budgets` with its
+entry in `entries`, and an input in `index.html` whose `id` is that field name.
 Run-behavior settings (how a result is reported, not what counts as a
 violation) belong on `Flags` alone, flag-only — see `config.rs`'s module doc
 comment.

@@ -432,7 +432,9 @@ fn score(tokens: &Counts, cfg: &Config, kind: Kind, tally: &Tally) -> u8 {
         return 100;
     }
     let mean = parts.iter().sum::<f64>() / parts.len() as f64;
-    mean.clamp(0.0, 100.0).round() as u8
+    // Floored, so a score only reaches a band it has fully earned: 87.5 rates
+    // 87 rather than being rounded up into an 88 the file did not achieve.
+    mean.clamp(0.0, 100.0).floor() as u8
 }
 
 /// Scores one token budget: full marks at or under the limit, then falling
@@ -724,10 +726,10 @@ mod tests {
                 100,
             ),
             (
-                "one of eight rules fails",
+                "one of eight rules fails, and 87.5 floors to 87",
                 "Bad_Name",
                 format!("---\nname: Bad_Name\n{valid_body}\n---\nBody.\n"),
-                88,
+                87,
             ),
             (
                 "a rule firing repeatedly still costs one rule",
@@ -735,7 +737,7 @@ mod tests {
                 format!(
                     "---\nname: valid-skill\n{valid_body}\nauthor: a\nversion: 1\nowner: b\n---\nBody.\n"
                 ),
-                88,
+                87,
             ),
             (
                 "missing front matter leaves one rule applied, and it failed",
@@ -766,12 +768,12 @@ mod tests {
         let (_base, target) = write_skill("Bad_Name", src);
 
         let res = Linter::new(generous_config(), None).file(&target).unwrap();
-        assert_eq!(res.score, 88);
+        assert_eq!(res.score, 87);
 
         let mut cfg = generous_config();
         cfg.strict = true;
         let res = Linter::new(cfg, None).file(&target).unwrap();
-        assert_eq!(res.score, 88);
+        assert_eq!(res.score, 87);
 
         let mut cfg = generous_config();
         cfg.disabled = vec![RULE_NAME_FORMAT.to_string()];

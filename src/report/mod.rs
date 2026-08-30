@@ -45,8 +45,8 @@ pub fn summarize(results: &[FileResult]) -> Summary {
     s.score = if results.is_empty() {
         100
     } else {
-        // Rounded half up, matching the per-file scores it averages.
-        ((total * 2 + results.len() as u32) / (results.len() as u32 * 2)) as u8
+        // Floored, matching the per-file scores it averages.
+        (total / results.len() as u32) as u8
     };
     s
 }

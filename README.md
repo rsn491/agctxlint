@@ -94,7 +94,9 @@ Each file is rated 0–100 as the mean of three parts:
 | Token budgets | 100 if within the budget, reaching 0 once a file is double its budget. E.g. 10% over budget scores 90; 50% over scores 50. A skill's `name` and `description` budgets average in with its body |
 | File references | 100 if every checked reference resolves, 0 if any is broken |
 
-The run's score is the mean of the file scores.
+Scores are rounded down, so a file rates only the band it has fully earned:
+a mean of 87.5 reports 87. The run's score is the mean of the file scores,
+rounded down the same way.
 
 ## Running on CI
 

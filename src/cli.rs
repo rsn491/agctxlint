@@ -688,7 +688,7 @@ mod tests {
         }
         // The run's score is the mean of the per-file scores it reports.
         let files = files.len() as u64;
-        assert_eq!(run_score, (total * 2 + files) / (files * 2), "{stdout}");
+        assert_eq!(run_score, total / files, "{stdout}");
 
         let mut sorted = paths.clone();
         sorted.sort();

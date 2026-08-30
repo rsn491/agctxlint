@@ -189,6 +189,81 @@
   .score-orange { --score-band: var(--score-orange); }
   .score-red { --score-band: var(--score-red); }
 
+  /* Token budgets. Collapsed by default: the common case is one URL and one
+     button, and the limits only matter once a repository disagrees with
+     them. */
+  .budgets {
+    margin: -0.75rem 0 1.5rem;
+    border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+    border-radius: 6px;
+    font-size: 0.9rem;
+  }
+  .budgets summary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .budgets[open] summary {
+    border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  }
+  .budgets-body { padding: 0.9rem; }
+  .budgets-hint {
+    margin: 0 0 0.9rem;
+    max-width: 62ch;
+    color: #767676;
+    font-size: 0.85rem;
+  }
+  .budgets-hint code { font-size: 0.95em; }
+  .budget-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 0.75rem;
+  }
+  .budget-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.85rem;
+  }
+  /* Muted on the caption only: the value has to stay at full contrast, and an
+     input inheriting a dimmed label would read as disabled. */
+  .budget-field span { color: #767676; }
+  input[type="number"] {
+    width: 100%;
+    padding: 0.4rem 0.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.95rem;
+    color: inherit;
+    background: transparent;
+    border: 1px solid #999;
+    border-radius: 6px;
+  }
+  .budgets-actions { margin-top: 0.9rem; }
+  .link-button {
+    padding: 0;
+    background: none;
+    color: #2563eb;
+    font-size: 0.85rem;
+    text-decoration: underline;
+  }
+  .link-button:disabled { background: none; color: #767676; }
+  /* Says a run will not use the defaults, so a collapsed panel cannot hide
+     that the score was measured against something else. */
+  .budgets-custom {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.35rem;
+    border-radius: 4px;
+    color: #767676;
+    background: color-mix(in srgb, currentColor 10%, transparent);
+  }
+
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
   th { color: #555; font-weight: 600; }
@@ -250,6 +325,42 @@
     <button type="submit" id="submit-btn">Lint</button>
   </form>
 
+  <details class="budgets" id="budgets">
+    <summary>
+      Token budgets
+      <span class="budgets-custom" id="budgets-custom" hidden>customized</span>
+    </summary>
+    <div class="budgets-body">
+      <p class="budgets-hint">
+        The limits this run enforces, in tokens. 0 turns a check off, and a
+        blank field falls back to the default. These win over the
+        repository's own <code>.ctxlint.yaml</code>, the same way the matching
+        <code>--max-*</code> flags do.
+      </p>
+      <div class="budget-grid">
+        <label class="budget-field">
+          <span>AGENTS.md content</span>
+          <input type="number" id="max_agents_tokens" form="lint-form" inputmode="numeric" step="1">
+        </label>
+        <label class="budget-field">
+          <span>SKILL.md content</span>
+          <input type="number" id="max_skill_tokens" form="lint-form" inputmode="numeric" step="1">
+        </label>
+        <label class="budget-field">
+          <span>Skill name</span>
+          <input type="number" id="max_skill_name_tokens" form="lint-form" inputmode="numeric" step="1">
+        </label>
+        <label class="budget-field">
+          <span>Skill description</span>
+          <input type="number" id="max_skill_description_tokens" form="lint-form" inputmode="numeric" step="1">
+        </label>
+      </div>
+      <div class="budgets-actions">
+        <button type="button" class="link-button" id="reset-budgets" disabled>Reset to defaults</button>
+      </div>
+    </div>
+  </details>
+
   <div id="status"></div>
   <div id="results"></div>
 </main>
@@ -260,6 +371,21 @@ const urlInput = document.getElementById('url');
 const submitBtn = document.getElementById('submit-btn');
 const statusEl = document.getElementById('status');
 const resultsEl = document.getElementById('results');
+const budgetsEl = document.getElementById('budgets');
+const budgetsCustomEl = document.getElementById('budgets-custom');
+const resetBudgetsBtn = document.getElementById('reset-budgets');
+
+// The token budgets, substituted in by the server from ctxlint's own defaults
+// (src/config.rs) and its ceiling on a budget. The form therefore opens on
+// exactly what a bare `ctxlint` run enforces, with nothing restated here to
+// drift from it.
+const BUDGET_SETTINGS = {{BUDGET_SETTINGS}};
+
+// Each budget's input, keyed by the field name `/lint` expects. Driven by the
+// defaults so a budget the server knows about cannot quietly lose its input.
+const budgetInputs = new Map(
+  Object.keys(BUDGET_SETTINGS.defaults).map(key => [key, document.getElementById(key)])
+);
 
 // The score bands, mirroring score_color in src/report/text.rs so the web
 // report reads a score exactly as the CLI does. Ordered high to low; the
@@ -271,9 +397,71 @@ const SCORE_BANDS = [
   { min: 0, cls: 'score-red', label: 'Wants work' },
 ];
 
+// A budget is a whole number of tokens the server will accept; anything else
+// is a typo worth stopping on rather than rounding into a limit the user did
+// not ask for. A blank field is not an error: it means the default.
+function budgetValue(key) {
+  const raw = budgetInputs.get(key).value.trim();
+  if (raw === '') return BUDGET_SETTINGS.defaults[key];
+  const n = Number(raw);
+  const ok = Number.isInteger(n) && n >= 0 && n <= BUDGET_SETTINGS.max;
+  return ok ? n : null;
+}
+
+function readBudgets() {
+  const budgets = {};
+  for (const key of budgetInputs.keys()) budgets[key] = budgetValue(key);
+  return budgets;
+}
+
+function resetBudgets() {
+  for (const [key, input] of budgetInputs) {
+    input.value = String(BUDGET_SETTINGS.defaults[key]);
+  }
+  syncBudgets();
+}
+
+// Keeps the panel honest while it is collapsed: the badge and the reset button
+// both track whether this run would use the defaults.
+function syncBudgets() {
+  const custom = [...budgetInputs.keys()].some(
+    key => budgetValue(key) !== BUDGET_SETTINGS.defaults[key]
+  );
+  budgetsCustomEl.hidden = !custom;
+  resetBudgetsBtn.disabled = !custom;
+}
+
+for (const input of budgetInputs.values()) {
+  input.min = 0;
+  input.max = BUDGET_SETTINGS.max;
+  input.addEventListener('input', syncBudgets);
+  // The browser reports a field the form rejects by focusing it, which it
+  // cannot do inside a collapsed panel: the submit would then be refused with
+  // nothing on screen to say why. Open the panel so the message has somewhere
+  // to point.
+  input.addEventListener('invalid', () => { budgetsEl.open = true; });
+}
+resetBudgetsBtn.addEventListener('click', resetBudgets);
+resetBudgets();
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   statusEl.className = '';
+
+  // A backstop behind the inputs' own min/max: the server rejects a budget
+  // outside the range outright, so it is better caught here than as a failed
+  // run after a clone.
+  const budgets = readBudgets();
+  const badKey = [...budgetInputs.keys()].find(key => budgets[key] === null);
+  if (badKey !== undefined) {
+    budgetsEl.open = true;
+    budgetInputs.get(badKey).focus();
+    statusEl.className = 'error';
+    statusEl.textContent =
+      `Token budgets must be whole numbers from 0 to ${BUDGET_SETTINGS.max} (0 turns that check off).`;
+    return;
+  }
+
   statusEl.textContent = 'Cloning and linting…';
   resultsEl.innerHTML = '';
   submitBtn.disabled = true;
@@ -282,9 +470,11 @@ form.addEventListener('submit', async (e) => {
     const res = await fetch('/lint', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: urlInput.value.trim() }),
+      body: JSON.stringify({ url: urlInput.value.trim(), budgets }),
     });
-    const body = await res.json();
+    // A rejection that never reached the handler (a malformed body, say) is
+    // not JSON, and a parse error there would bury the status code.
+    const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(body.error || `request failed with status ${res.status}`);
     }

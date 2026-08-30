@@ -116,6 +116,7 @@ name = "ctxlint-web"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "ctxlint",
  "serde",
  "serde_json",
  "tempfile",

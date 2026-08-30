@@ -8,19 +8,116 @@ use std::time::Duration;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
+use ctxlint::config::{
+    DEFAULT_MAX_AGENTS_TOKENS, DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS, DEFAULT_MAX_SKILL_NAME_TOKENS,
+    DEFAULT_MAX_SKILL_TOKENS,
+};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const CLONE_TIMEOUT: Duration = Duration::from_secs(60);
 const LINT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Caps a budget well above any real file so a typo in the form cannot turn
+/// into an unbounded number on the command line. Zero stays meaningful: it is
+/// how ctxlint spells "skip this check".
+const MAX_BUDGET: i64 = 1_000_000;
+
 const GENERIC_ERROR: &str =
     "Something went wrong while linting that repository. Please try again later.";
 const INVALID_URL_ERROR: &str = "That doesn't look like a valid GitHub repository URL. Expected format: https://github.com/<owner>/<repo>";
+const INVALID_BUDGET_ERROR: &str =
+    "Token budgets must be whole numbers from 0 to 1000000 (0 turns that check off).";
+
+/// The token budgets a run enforces, named after the flags they become.
+///
+/// Every field is optional, and an omitted one is not passed to `ctxlint` at
+/// all, so the clone's own `.ctxlint.yaml` still decides it. A budget that is
+/// present wins over that file, the same way the flag does on the command
+/// line -- which is what makes the form authoritative when it sends one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Budgets {
+    max_agents_tokens: Option<i64>,
+    max_skill_tokens: Option<i64>,
+    max_skill_name_tokens: Option<i64>,
+    max_skill_description_tokens: Option<i64>,
+}
+
+impl Budgets {
+    /// What a bare `ctxlint` run enforces. The page starts the form from
+    /// these, so the numbers on screen are the linter's own rather than a
+    /// second opinion that could drift from it.
+    pub fn defaults() -> Self {
+        Budgets {
+            max_agents_tokens: Some(DEFAULT_MAX_AGENTS_TOKENS),
+            max_skill_tokens: Some(DEFAULT_MAX_SKILL_TOKENS),
+            max_skill_name_tokens: Some(DEFAULT_MAX_SKILL_NAME_TOKENS),
+            max_skill_description_tokens: Some(DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS),
+        }
+    }
+
+    /// Each budget paired with the flag that carries it, in the order the
+    /// usage text lists them. Backs both validation and the argument list, so
+    /// a budget can never be checked but not passed, or the reverse.
+    fn entries(&self) -> [(&'static str, Option<i64>); 4] {
+        [
+            ("--max-agents-tokens", self.max_agents_tokens),
+            ("--max-skill-tokens", self.max_skill_tokens),
+            ("--max-skill-name-tokens", self.max_skill_name_tokens),
+            (
+                "--max-skill-description-tokens",
+                self.max_skill_description_tokens,
+            ),
+        ]
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for (flag, value) in self.entries() {
+            let Some(n) = value else { continue };
+            if !(0..=MAX_BUDGET).contains(&n) {
+                return Err(format!("{flag} is {n}, outside 0..={MAX_BUDGET}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn flags(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        for (flag, value) in self.entries() {
+            if let Some(n) = value {
+                args.push(flag.to_string());
+                args.push(n.to_string());
+            }
+        }
+        args
+    }
+}
+
+/// What the page needs to build the budget form: the numbers to open on and
+/// the ceiling to enforce on them. Serving it from here keeps the form and
+/// the server agreeing on both without either restating the other's numbers.
+#[derive(Serialize)]
+struct BudgetSettings {
+    defaults: Budgets,
+    max: i64,
+}
+
+/// The budget form's settings as JSON, for embedding in the page.
+pub fn budget_settings_json() -> String {
+    let settings = BudgetSettings {
+        defaults: Budgets::defaults(),
+        max: MAX_BUDGET,
+    };
+    serde_json::to_string(&settings).expect("budget settings are plain integers")
+}
 
 #[derive(Deserialize)]
 pub struct LintRequest {
     url: String,
+    /// Absent for a caller that only sends a URL, which then gets whatever
+    /// the repository and ctxlint's defaults work out between them.
+    #[serde(default)]
+    budgets: Budgets,
 }
 
 /// The detail behind an error never reaches the client: it may contain
@@ -40,7 +137,10 @@ impl IntoResponse for ApiError {
 
 pub async fn handle_lint(Json(req): Json<LintRequest>) -> Result<Json<Value>, ApiError> {
     let url = req.url.clone();
-    println!("POST /lint url={url:?}");
+    // The budgets are logged too: a report only makes sense next to the
+    // limits it was measured against.
+    let budgets = req.budgets.flags().join(" ");
+    println!("POST /lint url={url:?} budgets={budgets:?}");
 
     let result = handle_lint_inner(req).await;
 
@@ -59,15 +159,25 @@ pub async fn handle_lint(Json(req): Json<LintRequest>) -> Result<Json<Value>, Ap
 async fn handle_lint_inner(req: LintRequest) -> Result<Json<Value>, ApiError> {
     let clone_url =
         validate_github_url(&req.url).map_err(|detail| bad_request(detail, INVALID_URL_ERROR))?;
+    // Checked before the clone: there is no reason to spend a network fetch
+    // on a request that cannot be linted.
+    req.budgets
+        .validate()
+        .map_err(|detail| bad_request(detail, INVALID_BUDGET_ERROR))?;
 
     let dir = tempfile::TempDir::new()
         .map_err(|e| server_error(format!("failed to create temp dir: {e}")))?;
 
     clone_repo(&clone_url, dir.path()).await?;
-    let mut report = run_ctxlint(dir.path()).await?;
+    let mut report = run_ctxlint(dir.path(), &req.budgets).await?;
 
     if let Some(obj) = report.as_object_mut() {
         obj.insert("url".to_string(), Value::String(clone_url));
+        // Echoed back so a saved report says which limits produced it.
+        obj.insert(
+            "budgets".to_string(),
+            serde_json::to_value(&req.budgets).unwrap_or(Value::Null),
+        );
     }
     Ok(Json(report))
 }
@@ -133,9 +243,10 @@ async fn clone_repo(url: &str, dest: &Path) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn run_ctxlint(repo_dir: &Path) -> Result<Value, ApiError> {
+async fn run_ctxlint(repo_dir: &Path, budgets: &Budgets) -> Result<Value, ApiError> {
     let mut cmd = tokio::process::Command::new(ctxlint_binary_path());
     cmd.args(["--format", "json"])
+        .args(budgets.flags())
         .current_dir(repo_dir)
         .kill_on_drop(true);
 
@@ -190,5 +301,102 @@ fn server_error(log_detail: impl Into<String>) -> ApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         log_detail: log_detail.into(),
         public_message: GENERIC_ERROR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(body: &str) -> LintRequest {
+        serde_json::from_str(body).unwrap_or_else(|e| panic!("{body}: {e}"))
+    }
+
+    #[test]
+    fn budgets_become_flags_in_flag_order() {
+        let req = request(
+            r#"{"url":"https://github.com/o/r","budgets":{
+                "max_agents_tokens":1200,
+                "max_skill_tokens":0,
+                "max_skill_name_tokens":8,
+                "max_skill_description_tokens":64}}"#,
+        );
+        assert_eq!(
+            req.budgets.flags(),
+            [
+                "--max-agents-tokens",
+                "1200",
+                "--max-skill-tokens",
+                "0",
+                "--max-skill-name-tokens",
+                "8",
+                "--max-skill-description-tokens",
+                "64",
+            ]
+        );
+    }
+
+    /// A budget the caller left out must not reach the command line at all:
+    /// that is what leaves the clone's own `.ctxlint.yaml` in charge of it.
+    #[test]
+    fn omitted_budgets_pass_no_flags() {
+        assert_eq!(
+            request(r#"{"url":"https://github.com/o/r"}"#)
+                .budgets
+                .flags(),
+            Vec::<String>::new()
+        );
+
+        let partial =
+            request(r#"{"url":"https://github.com/o/r","budgets":{"max_skill_tokens":10}}"#);
+        assert_eq!(partial.budgets.flags(), ["--max-skill-tokens", "10"]);
+    }
+
+    #[test]
+    fn validate_rejects_budgets_outside_the_allowed_range() {
+        assert!(Budgets::defaults().validate().is_ok());
+        assert!(
+            Budgets {
+                max_skill_tokens: Some(0),
+                ..Budgets::default()
+            }
+            .validate()
+            .is_ok(),
+            "0 disables a check and must stay accepted"
+        );
+
+        for bad in [-1, MAX_BUDGET + 1] {
+            let err = Budgets {
+                max_agents_tokens: Some(bad),
+                ..Budgets::default()
+            }
+            .validate()
+            .unwrap_err();
+            assert!(err.contains("--max-agents-tokens"), "{err}");
+        }
+    }
+
+    /// The message spells the ceiling out, so it has to be the ceiling the
+    /// server actually enforces.
+    #[test]
+    fn the_budget_error_names_the_real_ceiling() {
+        assert!(
+            INVALID_BUDGET_ERROR.contains(&MAX_BUDGET.to_string()),
+            "{INVALID_BUDGET_ERROR:?} does not name {MAX_BUDGET}"
+        );
+    }
+
+    /// The form starts from these, so they are the linter's defaults or the
+    /// page is quietly lying about what it enforces.
+    #[test]
+    fn defaults_are_the_linters_own() {
+        let json = serde_json::to_value(Budgets::defaults()).unwrap();
+        assert_eq!(json["max_agents_tokens"], DEFAULT_MAX_AGENTS_TOKENS);
+        assert_eq!(json["max_skill_tokens"], DEFAULT_MAX_SKILL_TOKENS);
+        assert_eq!(json["max_skill_name_tokens"], DEFAULT_MAX_SKILL_NAME_TOKENS);
+        assert_eq!(
+            json["max_skill_description_tokens"],
+            DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS
+        );
     }
 }

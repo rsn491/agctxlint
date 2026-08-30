@@ -1,11 +1,22 @@
 mod lint;
 
+use std::sync::LazyLock;
+
 use axum::Router;
 use axum::response::Html;
 use axum::routing::{get, post};
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 3000;
+
+/// Where the page expects its token budget settings to be substituted in. The
+/// form has to open on real numbers rather than blanks, and the only numbers
+/// worth showing are the linter's own, so they are baked into the page here
+/// instead of being fetched afterwards -- the form is never briefly wrong.
+const BUDGETS_PLACEHOLDER: &str = "{{BUDGET_SETTINGS}}";
+
+/// The page, rendered once at first request.
+static INDEX_HTML: LazyLock<String> = LazyLock::new(|| render_index(include_str!("index.html")));
 
 #[tokio::main]
 async fn main() {
@@ -42,11 +53,29 @@ fn bind_addr() -> String {
 }
 
 async fn index() -> Html<&'static str> {
-    Html(include_str!("index.html"))
+    Html(INDEX_HTML.as_str())
+}
+
+/// Fills the page's placeholder with the budget settings as JSON. Panics on a
+/// page that lost the placeholder: serving a form with no budgets in it would
+/// look like a styling bug while every run went out against nothing.
+fn render_index(template: &str) -> String {
+    assert!(
+        template.contains(BUDGETS_PLACEHOLDER),
+        "index.html no longer contains {BUDGETS_PLACEHOLDER}"
+    );
+    template.replace(BUDGETS_PLACEHOLDER, &lint::budget_settings_json())
 }
 
 #[cfg(test)]
 mod tests {
+    use ctxlint::config::{
+        DEFAULT_MAX_AGENTS_TOKENS, DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS,
+        DEFAULT_MAX_SKILL_NAME_TOKENS, DEFAULT_MAX_SKILL_TOKENS,
+    };
+
+    use super::*;
+
     /// The page reads the report's scores straight out of the `/lint` JSON, so
     /// a rename on the Rust side would silently blank the score widgets. Pin
     /// the field names and the band classes the page depends on.
@@ -65,5 +94,51 @@ mod tests {
         ] {
             assert!(html.contains(needle), "index.html is missing {needle:?}");
         }
+    }
+
+    /// The form builds itself from the budget names the server sends, so an
+    /// input that lost its id would leave that budget with no field at all.
+    #[test]
+    fn index_has_an_input_for_every_budget() {
+        let html = include_str!("index.html");
+        for field in [
+            "max_agents_tokens",
+            "max_skill_tokens",
+            "max_skill_name_tokens",
+            "max_skill_description_tokens",
+        ] {
+            assert!(
+                html.contains(&format!("id=\"{field}\"")),
+                "index.html has no input for {field:?}"
+            );
+        }
+    }
+
+    /// The served page must carry the linter's real defaults, not a
+    /// placeholder the form would then read as `undefined`.
+    #[test]
+    fn render_index_substitutes_the_budget_settings() {
+        let rendered = render_index(include_str!("index.html"));
+        assert!(
+            !rendered.contains(BUDGETS_PLACEHOLDER),
+            "the placeholder survived rendering"
+        );
+        for needle in [
+            &format!("\"max_agents_tokens\":{DEFAULT_MAX_AGENTS_TOKENS}"),
+            &format!("\"max_skill_tokens\":{DEFAULT_MAX_SKILL_TOKENS}"),
+            &format!("\"max_skill_name_tokens\":{DEFAULT_MAX_SKILL_NAME_TOKENS}"),
+            &format!("\"max_skill_description_tokens\":{DEFAULT_MAX_SKILL_DESCRIPTION_TOKENS}"),
+        ] {
+            assert!(
+                rendered.contains(needle),
+                "rendered page is missing {needle}"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "no longer contains")]
+    fn render_index_rejects_a_page_without_the_placeholder() {
+        render_index("<html>no budgets here</html>");
     }
 }

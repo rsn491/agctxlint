@@ -210,13 +210,6 @@
     border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
   }
   .budgets-body { padding: 0.9rem; }
-  .budgets-hint {
-    margin: 0 0 0.9rem;
-    max-width: 62ch;
-    color: #767676;
-    font-size: 0.85rem;
-  }
-  .budgets-hint code { font-size: 0.95em; }
   .budget-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
@@ -331,12 +324,6 @@
       <span class="budgets-custom" id="budgets-custom" hidden>customized</span>
     </summary>
     <div class="budgets-body">
-      <p class="budgets-hint">
-        The limits this run enforces, in tokens. 0 turns a check off, and a
-        blank field falls back to the default. These win over the
-        repository's own <code>.ctxlint.yaml</code>, the same way the matching
-        <code>--max-*</code> flags do.
-      </p>
       <div class="budget-grid">
         <label class="budget-field">
           <span>AGENTS.md content</span>
@@ -356,7 +343,7 @@
         </label>
       </div>
       <div class="budgets-actions">
-        <button type="button" class="link-button" id="reset-budgets" disabled>Reset to defaults</button>
+        <button type="button" class="link-button" id="reset-budgets" disabled>Reset</button>
       </div>
     </div>
   </details>

@@ -2,7 +2,7 @@
 
 A linter for agent context files: `AGENTS.md`, skills, etc.; ensuring they're properly formatted and follow best practices.
 
-Demo: [ctxlint.onrender.com](https://ctxlint.onrender.com/)
+Demo: [ctxcheck.onrender.com](https://ctxcheck.onrender.com/)
 
 Features:
 - Detects broken references
@@ -15,7 +15,7 @@ Features:
 
 Install:
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rsn491/ctxlint/releases/latest/download/ctxcheck-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rsn491/ctxcheck/releases/latest/download/ctxcheck-installer.sh | sh
 ```
 
 Run in your repo:

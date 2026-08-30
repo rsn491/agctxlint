@@ -7,7 +7,7 @@ version = "0.0.2"
 edition = "2024"
 rust-version = "1.93"
 description = "A linter for agent instruction files: AGENTS.md, SKILL.md, and friends."
-repository = "https://github.com/rsn491/ctxlint"
+repository = "https://github.com/rsn491/ctxcheck"
 license = "MIT"
 
 [lib]

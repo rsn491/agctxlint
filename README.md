@@ -1,32 +1,32 @@
-# ctxlint
+# agctxlint
 
 A linter for agent context files: `AGENTS.md`, skills, etc.; ensuring they're properly formatted and follow best practices.
 
-Demo: [ctxlint.onrender.com](https://ctxlint.onrender.com/)
+Demo: [agctxlint.onrender.com](https://agctxlint.onrender.com/)
 
 Features:
 - Detects broken references
 - Validates skill frontmatter
 - Validates token budgets for skills and AGENTS.md
 
-![ctxlint linting a repo with broken skills, then reporting a scorecard](docs/img/scorecard.gif)
+![agctxlint linting a repo with broken skills, then reporting a scorecard](docs/img/scorecard.gif)
 
 ## Quick start
 
 Install:
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rsn491/ctxlint/releases/latest/download/ctxlint-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rsn491/agctxlint/releases/latest/download/agctxlint-installer.sh | sh
 ```
 
 Run in your repo:
 ```sh
-ctxlint .
+agctxlint .
 ```
 
 ## Usage
 
 ```sh
-ctxlint [flags] [path...]
+agctxlint [flags] [path...]
 ```
 
 Paths may be files or directories. Directories are walked recursively for
@@ -35,13 +35,13 @@ Paths may be files or directories. Directories are walked recursively for
 Examples:
 ```sh
 # lint the whole repository against the default budgets
-ctxlint .
+agctxlint .
 
 # just the skills, with a tighter body budget
-ctxlint --max-skill-tokens 2000 skills/
+agctxlint --max-skill-tokens 2000 skills/
 
 # CI: fail on warnings too, machine-readable output
-ctxlint --strict --format json .
+agctxlint --strict --format json .
 ```
 
 ### Flags
@@ -77,7 +77,7 @@ ctxlint --strict --format json .
 
 Switch any of them off by id:
 ```sh
-ctxlint --disable name.dir-mismatch --disable frontmatter.unknown-key .
+agctxlint --disable name.dir-mismatch --disable frontmatter.unknown-key .
 ```
 
 Rules (along with token budgets and excludes) can also be set in a
@@ -104,7 +104,7 @@ rounded down the same way.
 - name: Lint agent instruction files
   run: |
     cargo install --path .
-    ctxlint --strict .
+    agctxlint --strict .
 ```
 
 ## Development
@@ -125,7 +125,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-Pre-commit hooks run `fmt`, `clippy`, `check`, `test`, and ctxlint's own self-lint
+Pre-commit hooks run `fmt`, `clippy`, `check`, `test`, and agctxlint's own self-lint
 automatically. To install them:
 ```sh
 pip install pre-commit

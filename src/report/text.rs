@@ -16,8 +16,6 @@ pub(super) const RESET: &str = "\x1b[0m";
 
 pub(super) const ERROR_EMOJI: &str = "\u{274c}"; // ❌
 pub(super) const WARNING_EMOJI: &str = "\u{26a0}\u{fe0f}"; // ⚠️
-pub(super) const OK_EMOJI: &str = "\u{2705}"; // ✅
-pub(super) const TADA_EMOJI: &str = "\u{1f389}"; // 🎉
 
 /// The color a score bands into: green is healthy, yellow wants a look,
 /// orange is a real problem, red wants work.
@@ -27,6 +25,18 @@ fn score_color(score: u8) -> &'static str {
         70..=89 => YELLOW,
         50..=69 => ORANGE,
         _ => RED,
+    }
+}
+
+/// The band label a score falls into, mirroring the web UI's score card
+/// (see web/src/index.html's `SCORE_BANDS`) so a run rates the same in both
+/// places.
+pub(super) fn score_band_label(score: u8) -> &'static str {
+    match score {
+        90..=100 => "Healthy",
+        70..=89 => "Worth a look",
+        50..=69 => "Needs work",
+        _ => "Wants work",
     }
 }
 
@@ -45,12 +55,29 @@ fn paint(color: bool, code: &str, s: &str) -> String {
     }
 }
 
+/// A rough per-character terminal column width: emoji render as two columns
+/// and a variation selector (the invisible marker on `WARNING_EMOJI` that
+/// picks its emoji-style glyph) renders as zero. `chars().count()` alone
+/// would size the scorecard border a column short wherever an emoji lands,
+/// visibly misaligning its right edge; this is enough to size it correctly
+/// for the handful of symbols this reporter prints, without pulling in a
+/// full Unicode width table for one box border.
+fn visible_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| match c as u32 {
+            0xfe00..=0xfe0f => 0,
+            0x2600..=0x27bf | 0x1f300..=0x1faff => 2,
+            _ => 1,
+        })
+        .sum()
+}
+
 /// Groups findings under a header naming their file and its score, so the
-/// path is not repeated on every line. A clean file is still listed, header
-/// alone: the score is worth reporting even when nothing fired, and a perfect
-/// score is elided from the header since there's nothing to flag. `--quiet`
-/// keeps the terse view, dropping files with nothing left to report. A blank
-/// line separates file groups and sets the final summary line apart.
+/// path is not repeated on every line. A file with a perfect score is
+/// dropped entirely -- score 100 means no findings, so there is nothing to
+/// report -- the same way `--quiet` drops any file with nothing left to
+/// report. A blank line separates file groups and sets the final summary
+/// line apart.
 ///
 /// When `color` is set, severities are colorized and prefixed with a symbol;
 /// otherwise the output is plain text, unchanged from earlier versions so it
@@ -80,15 +107,14 @@ impl Report for TextReporter {
                 continue;
             }
             if r.score == 100 {
-                writeln!(w, "{}", paint(color, BOLD, &r.path))?;
-            } else {
-                writeln!(
-                    w,
-                    "{}  {}",
-                    paint(color, BOLD, &r.path),
-                    paint_score(color, r.score)
-                )?;
+                continue;
             }
+            writeln!(
+                w,
+                "{}  {}",
+                paint(color, BOLD, &r.path),
+                paint_score(color, r.score)
+            )?;
             for f in findings {
                 let location = if f.line > 0 {
                     format!("{}: ", f.line)
@@ -113,57 +139,63 @@ impl Report for TextReporter {
             writeln!(w)?;
         }
 
-        let s = summary;
-        let errors = plural(s.files_with_errors, "file with errors", "files with errors");
-        let warnings = plural(
-            s.files_with_warnings,
-            "file with warnings",
-            "files with warnings",
-        );
-        let errors = if s.files_with_errors > 0 {
-            paint(color, RED, &errors)
-        } else {
-            errors
-        };
-        let warnings = if s.files_with_warnings > 0 {
-            paint(color, YELLOW, &warnings)
-        } else {
-            warnings
-        };
-
-        if color {
-            let clean = s.files_with_errors == 0 && s.files_with_warnings == 0;
-            let status = if s.files_with_errors > 0 {
-                ERROR_EMOJI
-            } else if s.files_with_warnings > 0 {
-                WARNING_EMOJI
-            } else {
-                OK_EMOJI
-            };
-            let checked = plural(s.files, "file", "files");
-            let checked = if clean {
-                paint(color, GREEN, &checked)
-            } else {
-                checked
-            };
-            let score = paint_score(color, s.score);
-            let score = if score_color(s.score) == GREEN {
-                format!("{score} {TADA_EMOJI}")
-            } else {
-                score
-            };
-            writeln!(
-                w,
-                "{status} {checked} checked, {errors}, {warnings}, score {score}"
-            )?;
-        } else {
-            writeln!(
-                w,
-                "{} checked, {errors}, {warnings}, score {}",
-                plural(s.files, "file", "files"),
-                s.score
-            )?;
-        }
-        Ok(())
+        write_scorecard(w, color, summary)
     }
+}
+
+/// Prints the run's score as a bordered card -- the score and its band on
+/// one line, then a blank line setting it apart from the file counts
+/// underneath. The border is sized off each line's plain text, since ANSI
+/// codes and box-drawing padding must be computed independently of any
+/// color applied within a line.
+fn write_scorecard(w: &mut dyn Write, color: bool, s: &Summary) -> io::Result<()> {
+    let checked = plural(s.files, "file", "files");
+    let errors = plural(s.files_with_errors, "file with errors", "files with errors");
+    let warnings = plural(
+        s.files_with_warnings,
+        "file with warnings",
+        "files with warnings",
+    );
+    let clean = s.files_with_errors == 0 && s.files_with_warnings == 0;
+
+    let band = score_band_label(s.score);
+    let header_plain = format!("Score: {}/100 \u{b7} {band}", s.score);
+    let meta_plain = format!("{checked} checked, {errors}, {warnings}");
+
+    let header_out = if color {
+        format!(
+            "Score: {}/100 \u{b7} {}",
+            paint_score(color, s.score),
+            paint(color, score_color(s.score), band)
+        )
+    } else {
+        header_plain.clone()
+    };
+    let errors_out = if s.files_with_errors > 0 {
+        paint(color, RED, &errors)
+    } else {
+        errors
+    };
+    let warnings_out = if s.files_with_warnings > 0 {
+        paint(color, YELLOW, &warnings)
+    } else {
+        warnings
+    };
+    let checked_out = if clean {
+        paint(color, GREEN, &checked)
+    } else {
+        checked
+    };
+    let meta_out = format!("{checked_out} checked, {errors_out}, {warnings_out}");
+
+    let width = visible_width(&header_plain).max(visible_width(&meta_plain));
+    let border = "─".repeat(width + 2);
+    let pad = |plain: &str| " ".repeat(width - visible_width(plain));
+
+    writeln!(w, "┌{border}┐")?;
+    writeln!(w, "│ {header_out}{} │", pad(&header_plain))?;
+    writeln!(w, "│{}│", " ".repeat(width + 2))?;
+    writeln!(w, "│ {meta_out}{} │", pad(&meta_plain))?;
+    writeln!(w, "└{border}┘")?;
+    Ok(())
 }

@@ -82,8 +82,7 @@ mod tests {
     use crate::lint::Counts;
 
     use super::text::{
-        BOLD, ERROR_EMOJI, GREEN, OK_EMOJI, ORANGE, RED, RESET, TADA_EMOJI, WARNING_EMOJI, YELLOW,
-        paint_score,
+        BOLD, ERROR_EMOJI, GREEN, ORANGE, RED, RESET, WARNING_EMOJI, YELLOW, paint_score,
     };
 
     fn render_text(results: &[FileResult], quiet: bool, color: bool) -> Vec<u8> {
@@ -159,7 +158,7 @@ mod tests {
         let buf = render_text(&results(), false, false);
         let out = String::from_utf8(buf).unwrap();
         let lines: Vec<&str> = out.trim_end_matches('\n').split('\n').collect();
-        assert_eq!(lines.len(), 7, "{out}");
+        assert_eq!(lines.len(), 11, "{out}");
         assert_eq!(lines[0], "AGENTS.md  50");
         assert!(
             lines[1].starts_with("  error: tokens.content: "),
@@ -174,16 +173,33 @@ mod tests {
             lines[4]
         );
         assert_eq!(lines[5], "");
-        assert_eq!(
-            lines[6],
-            "2 files checked, 1 file with errors, 1 file with warnings, score 73"
+        // The run's scorecard: a bordered box with the score on top, a blank
+        // line, then the file counts underneath.
+        assert!(
+            lines[6].starts_with('┌') && lines[6].ends_with('┐'),
+            "{out}"
+        );
+        assert!(lines[7].contains("Score: 73/100 · Worth a look"), "{out}");
+        assert!(
+            lines[8].starts_with('│')
+                && lines[8].ends_with('│')
+                && lines[8].trim_matches('│').trim().is_empty(),
+            "{out}"
+        );
+        assert!(
+            lines[9].contains("2 files checked, 1 file with errors, 1 file with warnings"),
+            "{out}"
+        );
+        assert!(
+            lines[10].starts_with('└') && lines[10].ends_with('┘'),
+            "{out}"
         );
     }
 
-    /// A file with nothing to report still earns a line, but a perfect score
-    /// is elided from its header since there's nothing to flag.
+    /// A file with a perfect score is dropped entirely -- there's nothing to
+    /// flag -- in both the normal and `--quiet` views.
     #[test]
-    fn text_lists_clean_files_without_a_perfect_score() {
+    fn text_drops_files_with_a_perfect_score() {
         let clean = vec![FileResult {
             path: "skills/good/SKILL.md".to_string(),
             kind: Kind::Skill,
@@ -192,10 +208,9 @@ mod tests {
             findings: vec![],
         }];
         let out = String::from_utf8(render_text(&clean, false, false)).unwrap();
-        assert!(out.starts_with("skills/good/SKILL.md\n"), "{out}");
-        assert!(out.contains("score 100"), "{out}");
+        assert!(!out.contains("skills/good/SKILL.md"), "{out}");
+        assert!(out.contains("Score: 100/100 · Healthy"), "{out}");
 
-        // --quiet keeps the terse view: no line for a file with nothing left.
         let out = String::from_utf8(render_text(&clean, true, false)).unwrap();
         assert!(!out.contains("skills/good/SKILL.md"), "{out}");
     }
@@ -211,9 +226,11 @@ mod tests {
     #[test]
     fn text_singular_plural() {
         let buf = render_text(&[], false, false);
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            "0 files checked, 0 files with errors, 0 files with warnings, score 100\n"
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("Score: 100/100 · Healthy"), "{out}");
+        assert!(
+            out.contains("0 files checked, 0 files with errors, 0 files with warnings"),
+            "{out}"
         );
     }
 
@@ -232,37 +249,12 @@ mod tests {
     }
 
     #[test]
-    fn text_color_clean_run_shows_ok_emoji_and_green_count() {
+    fn text_color_clean_run_shows_green_count() {
         let buf = render_text(&[], false, true);
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.starts_with(OK_EMOJI), "{out}");
         assert!(out.contains(GREEN), "{out}");
         assert!(!out.contains(RED), "{out}");
         assert!(!out.contains(YELLOW), "{out}");
-    }
-
-    /// A green run score is the last thing on its line, and gets a tada to
-    /// celebrate it; plain text stays diff-friendly with no emoji added.
-    #[test]
-    fn text_color_green_run_score_gets_a_tada() {
-        let out = String::from_utf8(render_text(&[], false, true)).unwrap();
-        assert!(
-            out.trim_end()
-                .ends_with(&format!("100{RESET} {TADA_EMOJI}")),
-            "{out}"
-        );
-
-        let out = String::from_utf8(render_text(&[], false, false)).unwrap();
-        assert!(!out.contains(TADA_EMOJI), "{out}");
-    }
-
-    /// The tada is a run-summary flourish, not a per-file one: `results()`
-    /// has a file scored 96 (green band) but a 73 run score (yellow band),
-    /// so no tada should appear anywhere in the output.
-    #[test]
-    fn text_color_per_file_score_has_no_tada() {
-        let out = String::from_utf8(render_text(&results(), false, true)).unwrap();
-        assert!(!out.contains(TADA_EMOJI), "{out}");
     }
 
     /// A mid-range score bad enough to fall short of yellow still isn't the

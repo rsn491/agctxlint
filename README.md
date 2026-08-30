@@ -9,6 +9,8 @@ Features:
 - Validates skill frontmatter
 - Validates token budgets for skills and AGENTS.md
 
+![ctxlint linting a repo with broken skills, then reporting a scorecard](docs/img/scorecard.gif)
+
 ## Quick start
 
 Install:

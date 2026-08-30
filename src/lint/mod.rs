@@ -1230,4 +1230,61 @@ mod tests {
             assert!(res.findings.is_empty());
         }
     }
+
+    #[test]
+    fn file_reference_rule_links_inside_code_spans() {
+        // Link syntax shown inside backticks is literal text, not a link, so
+        // its target is not checked. A code span used as a link *label* is the
+        // other direction of the same masking: that link is real and must
+        // still be checked.
+        let cases: &[(&str, &str, Vec<&str>)] = &[
+            (
+                "link syntax inside a code span is not a reference",
+                "Write it as `[title](./missing.md)`.\n",
+                vec![],
+            ),
+            (
+                "an image inside a code span is not a reference",
+                "Write it as `![alt](./missing.png)`.\n",
+                vec![],
+            ),
+            (
+                "a double-backtick span hides link syntax too",
+                "Use ``[title](./missing.md)`` for that.\n",
+                vec![],
+            ),
+            (
+                "a code span in the label does not hide the link",
+                "See [`notes`](./notes.md).\n",
+                vec![RULE_FILE_REFERENCE_MISSING],
+            ),
+            (
+                // The masked target is dropped rather than reported as a file
+                // named `***`; the span is still read as a path on its own.
+                "a masked span in the target position is not reported as `***`",
+                "See [notes](`./notes.md`).\n",
+                vec![RULE_FILE_REFERENCE_MISSING],
+            ),
+            (
+                "masking one link leaves a real one on the same line",
+                "See `[x](./missing.md)` and [y](./gone.md).\n",
+                vec![RULE_FILE_REFERENCE_MISSING],
+            ),
+        ];
+
+        for (name, src, want) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let target = agents_target(dir.path(), src);
+            let res = Linter::new(generous_config(), None).file(&target).unwrap();
+            assert_eq!(rule_ids(&res.findings), *want, "{name}");
+        }
+
+        // The label case again with the file present: the link is checked, and
+        // it resolves, so the case above is not passing on a parse failure.
+        let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), "notes.md", "notes");
+        let target = agents_target(dir.path(), "See [`notes`](./notes.md).\n");
+        let res = Linter::new(generous_config(), None).file(&target).unwrap();
+        assert!(res.findings.is_empty());
+    }
 }

@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::LazyLock;
 
-use regex::Regex;
+use regex::{Captures, Regex};
 
 use crate::discover::Kind;
 use crate::fence::FenceTracker;
@@ -15,8 +15,9 @@ use crate::lint::{FileContext, FindingSink, RULE_FILE_REFERENCE_MISSING};
 /// `![alt](target)`. Does not handle reference-style links (`[text][ref]`).
 static LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!?\[[^\]]*\]\(([^)]+)\)").unwrap());
 
-/// Matches inline code spans: `` `text` ``. Fenced code blocks are excluded
-/// separately, by the FenceTracker.
+/// Matches inline code spans: `` `text` ``. Does double duty: a span's contents
+/// are masked out of the link scan, and are then read as a reference in their
+/// own right. Fenced code blocks are excluded separately, by the FenceTracker.
 static CODE_SPAN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`]+)`").unwrap());
 
 /// Detects an absolute URI (`https://`, `mailto:`, `tel:`, and the like) so
@@ -79,8 +80,9 @@ impl Rule for Missing {
 /// The checkable file references on one line, deduplicated so a link and a
 /// code span naming the same target report once.
 fn line_targets(line: &str) -> Vec<String> {
+    let masked = mask_code_spans(line);
     let mut targets: Vec<String> = Vec::new();
-    for caps in LINK_RE.captures_iter(line) {
+    for caps in LINK_RE.captures_iter(&masked) {
         if let Some(target) = link_target_path(&caps[1]) {
             targets.push(target);
         }
@@ -93,6 +95,22 @@ fn line_targets(line: &str) -> Vec<String> {
         }
     }
     targets
+}
+
+/// Blanks out inline code spans so link syntax shown inside backticks --
+/// `` `[title](./example.md)` `` -- reads as the literal text it is rather than
+/// as a reference. Masking rather than deleting keeps a code span used as a
+/// link label, ``[`notes`](./notes.md)``, a link whose target is still checked.
+///
+/// The filler is `*` because `link_target_path` already rejects it: a masked
+/// span sitting in a link's target position is then dropped, not reported as a
+/// missing file named `****`.
+fn mask_code_spans(line: &str) -> String {
+    CODE_SPAN_RE
+        .replace_all(line, |caps: &Captures<'_>| {
+            "*".repeat(caps[0].chars().count())
+        })
+        .into_owned()
 }
 
 /// Extracts the file path a markdown link points at, or `None` when the link

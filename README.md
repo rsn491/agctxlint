@@ -1,4 +1,4 @@
-# ctxlint
+# ctxcheck
 
 A linter for agent context files: `AGENTS.md`, skills, etc.; ensuring they're properly formatted and follow best practices.
 
@@ -9,24 +9,24 @@ Features:
 - Validates skill frontmatter
 - Validates token budgets for skills and AGENTS.md
 
-![ctxlint linting a repo with broken skills, then reporting a scorecard](docs/img/scorecard.gif)
+![ctxcheck linting a repo with broken skills, then reporting a scorecard](docs/img/scorecard.gif)
 
 ## Quick start
 
 Install:
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rsn491/ctxlint/releases/latest/download/ctxlint-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rsn491/ctxlint/releases/latest/download/ctxcheck-installer.sh | sh
 ```
 
 Run in your repo:
 ```sh
-ctxlint .
+ctxcheck .
 ```
 
 ## Usage
 
 ```sh
-ctxlint [flags] [path...]
+ctxcheck [flags] [path...]
 ```
 
 Paths may be files or directories. Directories are walked recursively for
@@ -35,13 +35,13 @@ Paths may be files or directories. Directories are walked recursively for
 Examples:
 ```sh
 # lint the whole repository against the default budgets
-ctxlint .
+ctxcheck .
 
 # just the skills, with a tighter body budget
-ctxlint --max-skill-tokens 2000 skills/
+ctxcheck --max-skill-tokens 2000 skills/
 
 # CI: fail on warnings too, machine-readable output
-ctxlint --strict --format json .
+ctxcheck --strict --format json .
 ```
 
 ### Flags
@@ -77,12 +77,12 @@ ctxlint --strict --format json .
 
 Switch any of them off by id:
 ```sh
-ctxlint --disable name.dir-mismatch --disable frontmatter.unknown-key .
+ctxcheck --disable name.dir-mismatch --disable frontmatter.unknown-key .
 ```
 
 Rules (along with token budgets and excludes) can also be set in a
-`.ctxlint.yaml` config file instead of passing flags every time — see
-[`.ctxlint.yaml`](.ctxlint.yaml) for an example.
+`.ctxcheck.yaml` config file instead of passing flags every time — see
+[`.ctxcheck.yaml`](.ctxcheck.yaml) for an example.
 
 ## Score
 
@@ -102,7 +102,7 @@ The run's score is the mean of the file scores.
 - name: Lint agent instruction files
   run: |
     cargo install --path .
-    ctxlint --strict .
+    ctxcheck --strict .
 ```
 
 ## Development
@@ -123,7 +123,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-Pre-commit hooks run `fmt`, `clippy`, `check`, `test`, and ctxlint's own self-lint
+Pre-commit hooks run `fmt`, `clippy`, `check`, `test`, and ctxcheck's own self-lint
 automatically. To install them:
 ```sh
 pip install pre-commit

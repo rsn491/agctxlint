@@ -2,7 +2,7 @@
 members = ["web"]
 
 [package]
-name = "ctxlint"
+name = "ctxcheck"
 version = "0.0.2"
 edition = "2024"
 rust-version = "1.93"
@@ -11,11 +11,11 @@ repository = "https://github.com/rsn491/ctxlint"
 license = "MIT"
 
 [lib]
-name = "ctxlint"
+name = "ctxcheck"
 path = "src/lib.rs"
 
 [[bin]]
-name = "ctxlint"
+name = "ctxcheck"
 path = "src/main.rs"
 
 [dependencies]

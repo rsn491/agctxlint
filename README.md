@@ -71,7 +71,7 @@ ctxlint --strict --format json .
 | `tokens.content` | error | Body within its token budget |
 | `tokens.name` | error | `name` within its token budget |
 | `tokens.description` | error | `description` within its token budget |
-| `file-reference.missing` | error | Every relative markdown link, and every `./`- or `../`-prefixed file path in inline code, resolves to a file that exists |
+| `file-reference.missing` | error | Every relative markdown link outside inline code, and every `./`- or `../`-prefixed file path in inline code, resolves to a file that exists |
 
 Switch any of them off by id:
 ```sh

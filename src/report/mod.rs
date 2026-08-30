@@ -179,7 +179,7 @@ mod tests {
             lines[6].starts_with('┌') && lines[6].ends_with('┐'),
             "{out}"
         );
-        assert!(lines[7].contains("Score: 73/100"), "{out}");
+        assert!(lines[7].contains("Score: 73/100 · Worth a look"), "{out}");
         assert!(
             lines[8].starts_with('│')
                 && lines[8].ends_with('│')
@@ -209,7 +209,7 @@ mod tests {
         }];
         let out = String::from_utf8(render_text(&clean, false, false)).unwrap();
         assert!(!out.contains("skills/good/SKILL.md"), "{out}");
-        assert!(out.contains("Score: 100/100"), "{out}");
+        assert!(out.contains("Score: 100/100 · Healthy"), "{out}");
 
         let out = String::from_utf8(render_text(&clean, true, false)).unwrap();
         assert!(!out.contains("skills/good/SKILL.md"), "{out}");
@@ -227,7 +227,7 @@ mod tests {
     fn text_singular_plural() {
         let buf = render_text(&[], false, false);
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("Score: 100/100"), "{out}");
+        assert!(out.contains("Score: 100/100 · Healthy"), "{out}");
         assert!(
             out.contains("0 files checked, 0 files with errors, 0 files with warnings"),
             "{out}"

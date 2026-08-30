@@ -28,6 +28,18 @@ fn score_color(score: u8) -> &'static str {
     }
 }
 
+/// The band label a score falls into, mirroring the web UI's score card
+/// (see web/src/index.html's `SCORE_BANDS`) so a run rates the same in both
+/// places.
+pub(super) fn score_band_label(score: u8) -> &'static str {
+    match score {
+        90..=100 => "Healthy",
+        70..=89 => "Worth a look",
+        50..=69 => "Needs work",
+        _ => "Wants work",
+    }
+}
+
 /// Colors a score by band so a report scans at a glance.
 pub(super) fn paint_score(color: bool, score: u8) -> String {
     paint(color, score_color(score), &score.to_string())
@@ -131,11 +143,11 @@ impl Report for TextReporter {
     }
 }
 
-/// Prints the run's score as a bordered card -- the score on its own line,
-/// then a blank line setting it apart from the file counts underneath. The
-/// border is sized off each line's plain text, since ANSI codes and
-/// box-drawing padding must be computed independently of any color applied
-/// within a line.
+/// Prints the run's score as a bordered card -- the score and its band on
+/// one line, then a blank line setting it apart from the file counts
+/// underneath. The border is sized off each line's plain text, since ANSI
+/// codes and box-drawing padding must be computed independently of any
+/// color applied within a line.
 fn write_scorecard(w: &mut dyn Write, color: bool, s: &Summary) -> io::Result<()> {
     let checked = plural(s.files, "file", "files");
     let errors = plural(s.files_with_errors, "file with errors", "files with errors");
@@ -146,11 +158,16 @@ fn write_scorecard(w: &mut dyn Write, color: bool, s: &Summary) -> io::Result<()
     );
     let clean = s.files_with_errors == 0 && s.files_with_warnings == 0;
 
-    let header_plain = format!("Score: {}/100", s.score);
+    let band = score_band_label(s.score);
+    let header_plain = format!("Score: {}/100 \u{b7} {band}", s.score);
     let meta_plain = format!("{checked} checked, {errors}, {warnings}");
 
     let header_out = if color {
-        format!("Score: {}/100", paint_score(color, s.score))
+        format!(
+            "Score: {}/100 \u{b7} {}",
+            paint_score(color, s.score),
+            paint(color, score_color(s.score), band)
+        )
     } else {
         header_plain.clone()
     };

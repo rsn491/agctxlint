@@ -16,8 +16,6 @@ pub(super) const RESET: &str = "\x1b[0m";
 
 pub(super) const ERROR_EMOJI: &str = "\u{274c}"; // ❌
 pub(super) const WARNING_EMOJI: &str = "\u{26a0}\u{fe0f}"; // ⚠️
-pub(super) const OK_EMOJI: &str = "\u{2705}"; // ✅
-pub(super) const TADA_EMOJI: &str = "\u{1f389}"; // 🎉
 
 /// The color a score bands into: green is healthy, yellow wants a look,
 /// orange is a real problem, red wants work.
@@ -27,18 +25,6 @@ fn score_color(score: u8) -> &'static str {
         70..=89 => YELLOW,
         50..=69 => ORANGE,
         _ => RED,
-    }
-}
-
-/// The band label a score falls into, mirroring the web UI's score card
-/// (see web/src/index.html's `SCORE_BANDS`) so a run rates the same in both
-/// places.
-pub(super) fn score_band_label(score: u8) -> &'static str {
-    match score {
-        90..=100 => "Healthy",
-        70..=89 => "Worth a look",
-        50..=69 => "Needs work",
-        _ => "Wants work",
     }
 }
 
@@ -75,11 +61,11 @@ fn visible_width(s: &str) -> usize {
 }
 
 /// Groups findings under a header naming their file and its score, so the
-/// path is not repeated on every line. A clean file is still listed, header
-/// alone: the score is worth reporting even when nothing fired, and a perfect
-/// score is elided from the header since there's nothing to flag. `--quiet`
-/// keeps the terse view, dropping files with nothing left to report. A blank
-/// line separates file groups and sets the final summary line apart.
+/// path is not repeated on every line. A file with a perfect score is
+/// dropped entirely -- score 100 means no findings, so there is nothing to
+/// report -- the same way `--quiet` drops any file with nothing left to
+/// report. A blank line separates file groups and sets the final summary
+/// line apart.
 ///
 /// When `color` is set, severities are colorized and prefixed with a symbol;
 /// otherwise the output is plain text, unchanged from earlier versions so it
@@ -109,15 +95,14 @@ impl Report for TextReporter {
                 continue;
             }
             if r.score == 100 {
-                writeln!(w, "{}", paint(color, BOLD, &r.path))?;
-            } else {
-                writeln!(
-                    w,
-                    "{}  {}",
-                    paint(color, BOLD, &r.path),
-                    paint_score(color, r.score)
-                )?;
+                continue;
             }
+            writeln!(
+                w,
+                "{}  {}",
+                paint(color, BOLD, &r.path),
+                paint_score(color, r.score)
+            )?;
             for f in findings {
                 let location = if f.line > 0 {
                     format!("{}: ", f.line)
@@ -146,11 +131,11 @@ impl Report for TextReporter {
     }
 }
 
-/// Prints the run's score as a bordered card -- one number, its band, and the
-/// file counts underneath -- mirroring the web UI's score card so a run rates
-/// the same and reads the same shape in both places. The border is sized off
-/// each line's plain text, since ANSI codes and box-drawing padding must be
-/// computed independently of any color applied within a line.
+/// Prints the run's score as a bordered card -- the score on its own line,
+/// then a blank line setting it apart from the file counts underneath. The
+/// border is sized off each line's plain text, since ANSI codes and
+/// box-drawing padding must be computed independently of any color applied
+/// within a line.
 fn write_scorecard(w: &mut dyn Write, color: bool, s: &Summary) -> io::Result<()> {
     let checked = plural(s.files, "file", "files");
     let errors = plural(s.files_with_errors, "file with errors", "files with errors");
@@ -160,34 +145,12 @@ fn write_scorecard(w: &mut dyn Write, color: bool, s: &Summary) -> io::Result<()
         "files with warnings",
     );
     let clean = s.files_with_errors == 0 && s.files_with_warnings == 0;
-    let band = score_band_label(s.score);
-    let green = score_color(s.score) == GREEN;
-    let status_emoji = if s.files_with_errors > 0 {
-        ERROR_EMOJI
-    } else if s.files_with_warnings > 0 {
-        WARNING_EMOJI
-    } else {
-        OK_EMOJI
-    };
-    let tada = if green {
-        format!(" {TADA_EMOJI}")
-    } else {
-        String::new()
-    };
 
-    let header_plain = if color {
-        format!("{status_emoji} {}/100 \u{b7} {band}{tada}", s.score)
-    } else {
-        format!("{}/100 \u{b7} {band}", s.score)
-    };
+    let header_plain = format!("Score: {}/100", s.score);
     let meta_plain = format!("{checked} checked, {errors}, {warnings}");
 
     let header_out = if color {
-        format!(
-            "{status_emoji} {}/100 \u{b7} {}{tada}",
-            paint_score(color, s.score),
-            paint(color, score_color(s.score), band)
-        )
+        format!("Score: {}/100", paint_score(color, s.score))
     } else {
         header_plain.clone()
     };
@@ -214,6 +177,7 @@ fn write_scorecard(w: &mut dyn Write, color: bool, s: &Summary) -> io::Result<()
 
     writeln!(w, "┌{border}┐")?;
     writeln!(w, "│ {header_out}{} │", pad(&header_plain))?;
+    writeln!(w, "│{}│", " ".repeat(width + 2))?;
     writeln!(w, "│ {meta_out}{} │", pad(&meta_plain))?;
     writeln!(w, "└{border}┘")?;
     Ok(())

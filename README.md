@@ -94,20 +94,6 @@ Each file is rated 0–100 as the mean of three parts:
 
 The run's score is the mean of the file scores.
 
-## Web UI
-
-`web/` is a small axum server that clones a public GitHub repository and lints
-it in the browser:
-
-```sh
-cargo run -p ctxlint-web    # http://127.0.0.1:3000
-```
-
-The page's **Token budgets** panel opens on the same defaults the CLI uses and
-can be changed per run. A budget set there wins over the repository's own
-`.ctxlint.yaml`, the same way the matching `--max-*` flag does; 0 turns that
-check off.
-
 ## Running on CI
 
 ```yaml

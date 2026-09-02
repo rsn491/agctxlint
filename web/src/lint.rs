@@ -1,6 +1,6 @@
-//! Handles `POST /lint`: validates a GitHub URL, clones it into a temp
-//! directory, runs the `ctxlint` binary against the clone, and forwards its
-//! JSON report to the caller.
+//! Handles `POST /lint`: validates a GitHub URL, downloads a tarball of it
+//! into a temp directory, runs the `ctxlint` binary against that tree, and
+//! forwards its JSON report to the caller.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -15,7 +15,7 @@ use ctxlint::config::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-const CLONE_TIMEOUT: Duration = Duration::from_secs(60);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 const LINT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Caps a budget well above any real file so a typo in the form cannot turn
@@ -157,10 +157,10 @@ pub async fn handle_lint(Json(req): Json<LintRequest>) -> Result<Json<Value>, Ap
 }
 
 async fn handle_lint_inner(req: LintRequest) -> Result<Json<Value>, ApiError> {
-    let clone_url =
+    let (owner, repo) =
         validate_github_url(&req.url).map_err(|detail| bad_request(detail, INVALID_URL_ERROR))?;
-    // Checked before the clone: there is no reason to spend a network fetch
-    // on a request that cannot be linted.
+    // Checked before the download: there is no reason to spend a network
+    // fetch on a request that cannot be linted.
     req.budgets
         .validate()
         .map_err(|detail| bad_request(detail, INVALID_BUDGET_ERROR))?;
@@ -168,11 +168,14 @@ async fn handle_lint_inner(req: LintRequest) -> Result<Json<Value>, ApiError> {
     let dir = tempfile::TempDir::new()
         .map_err(|e| server_error(format!("failed to create temp dir: {e}")))?;
 
-    clone_repo(&clone_url, dir.path()).await?;
+    download_repo(&owner, &repo, dir.path()).await?;
     let mut report = run_ctxlint(dir.path(), &req.budgets).await?;
 
     if let Some(obj) = report.as_object_mut() {
-        obj.insert("url".to_string(), Value::String(clone_url));
+        obj.insert(
+            "url".to_string(),
+            Value::String(format!("https://github.com/{owner}/{repo}")),
+        );
         // Echoed back so a saved report says which limits produced it.
         obj.insert(
             "budgets".to_string(),
@@ -183,13 +186,11 @@ async fn handle_lint_inner(req: LintRequest) -> Result<Json<Value>, ApiError> {
 }
 
 /// Accepts only `https://github.com/<owner>/<repo>[.git][/]`, rejecting
-/// anything else. This is a security boundary as much as a UX one: git
-/// supports transports like `ext::` that can execute arbitrary commands, so
-/// the server must never hand user input to `git clone` unvalidated. Returns
-/// a canonicalized clone URL rebuilt from the validated parts (rather than
-/// the raw input) so stray query strings, fragments, or credentials in the
-/// original can't slip through.
-fn validate_github_url(raw: &str) -> Result<String, String> {
+/// anything else, and returns the validated `(owner, repo)` pair. This is a
+/// security boundary as much as a UX one: the pair is later interpolated
+/// into a download URL and passed to `tar`, so the server must never hand
+/// user input through unvalidated.
+fn validate_github_url(raw: &str) -> Result<(String, String), String> {
     let trimmed = raw.trim();
     let without_slash = trimmed.strip_suffix('/').unwrap_or(trimmed);
     let rest = without_slash
@@ -211,71 +212,95 @@ fn validate_github_url(raw: &str) -> Result<String, String> {
         return Err("owner/repo contains invalid characters".to_string());
     }
 
-    Ok(format!("https://github.com/{owner}/{repo}"))
+    Ok((owner.to_string(), repo.to_string()))
 }
 
-/// Clone attempts to retry before giving up. GitHub's smart-HTTP endpoint
-/// occasionally answers a well-formed, public-repo request with a truncated
-/// or unauthenticated-looking response (seen from some cloud hosts' egress
-/// IPs); the failure clears on a prompt retry far more often than it
-/// reflects anything wrong with the URL.
-const CLONE_ATTEMPTS: u32 = 3;
+/// Downloads a tarball of the repository's default-branch `HEAD` from
+/// GitHub's codeload service and extracts it into `dest`, rather than
+/// running `git clone` against GitHub's smart-HTTP endpoint. On at least one
+/// host this app runs on (Render), that endpoint reliably fails with git's
+/// "terminal prompts disabled" / "expected flush after ref listing" errors
+/// for perfectly ordinary public repos -- symptoms of the pkt-line response
+/// getting mangled in transit -- and retrying the same request does not help.
+/// A plain HTTPS download avoids that protocol path entirely; `ctxlint` only
+/// ever reads the file tree, so a tarball (no `.git` history) is enough.
+const DOWNLOAD_ATTEMPTS: u32 = 2;
 
-async fn clone_repo(url: &str, dest: &Path) -> Result<(), ApiError> {
+async fn download_repo(owner: &str, repo: &str, dest: &Path) -> Result<(), ApiError> {
+    let archive_url = format!("https://codeload.github.com/{owner}/{repo}/tar.gz/HEAD");
+    let archive = tempfile::NamedTempFile::new()
+        .map_err(|e| server_error(format!("failed to create temp file: {e}")))?;
+    let archive_path = archive.path().to_string_lossy().into_owned();
+
     let mut last_stderr = String::new();
 
-    for attempt in 1..=CLONE_ATTEMPTS {
-        // A prior attempt in this loop may have left a partial clone behind;
-        // `git clone` refuses to reuse a non-empty destination.
-        let _ = tokio::fs::remove_dir_all(dest).await;
-        tokio::fs::create_dir_all(dest)
-            .await
-            .map_err(|e| server_error(format!("failed to recreate temp dir: {e}")))?;
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        let mut cmd = tokio::process::Command::new("curl");
+        cmd.args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--max-time",
+            &DOWNLOAD_TIMEOUT.as_secs().to_string(),
+            "--output",
+            &archive_path,
+            &archive_url,
+        ])
+        .kill_on_drop(true);
 
-        let mut cmd = tokio::process::Command::new("git");
-        cmd.args(["clone", "--depth", "1", "--", url, &dest.to_string_lossy()])
-            // Blocks git's non-http(s) transports (e.g. `ext::`, which can run
-            // arbitrary commands) even if validation above were ever bypassed.
-            .env("GIT_ALLOW_PROTOCOL", "https")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .kill_on_drop(true);
-
-        let output = tokio::time::timeout(CLONE_TIMEOUT, cmd.output())
+        let output = tokio::time::timeout(DOWNLOAD_TIMEOUT, cmd.output())
             .await
             .map_err(|_| {
                 bad_request(
-                    "cloning the repository timed out",
-                    "Cloning that repository timed out. Please try again.",
+                    "downloading the repository timed out",
+                    "Downloading that repository timed out. Please try again.",
                 )
             })?
-            .map_err(|e| server_error(format!("failed to run git: {e}")))?;
+            .map_err(|e| server_error(format!("failed to run curl: {e}")))?;
 
         if output.status.success() {
-            return Ok(());
+            return extract_archive(&archive_path, dest).await;
         }
 
         last_stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if attempt < CLONE_ATTEMPTS {
+        if attempt < DOWNLOAD_ATTEMPTS {
             tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
         }
     }
 
-    // "terminal prompts disabled" / "expected flush after ref listing" are
-    // git's symptoms of a mangled server response, not of a missing or
-    // private repo -- telling the user to double-check a URL that is
-    // already fine just sends them in circles.
-    let public_message = if last_stderr.contains("terminal prompts disabled")
-        || last_stderr.contains("expected flush after ref listing")
-    {
-        "GitHub couldn't be reached from this server right now. This is usually temporary -- please try again in a moment."
-    } else {
-        "Could not clone that repository. Make sure the URL points to a public GitHub repository."
-    };
-
     Err(bad_request(
-        format!("git clone failed after {CLONE_ATTEMPTS} attempts: {last_stderr}"),
-        public_message,
+        format!("archive download failed after {DOWNLOAD_ATTEMPTS} attempts: {last_stderr}"),
+        "Could not download that repository. Make sure the URL points to a public GitHub repository.",
     ))
+}
+
+async fn extract_archive(archive_path: &str, dest: &Path) -> Result<(), ApiError> {
+    let mut cmd = tokio::process::Command::new("tar");
+    // The tarball wraps everything in one `{repo}-{sha}/` directory;
+    // strip-components drops that so files land directly in `dest`.
+    cmd.args([
+        "-xzf",
+        archive_path,
+        "-C",
+        &dest.to_string_lossy(),
+        "--strip-components=1",
+    ])
+    .kill_on_drop(true);
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| server_error(format!("failed to run tar: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(server_error(format!(
+            "failed to extract archive: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(())
 }
 
 async fn run_ctxlint(repo_dir: &Path, budgets: &Budgets) -> Result<Value, ApiError> {

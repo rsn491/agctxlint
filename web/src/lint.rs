@@ -214,33 +214,68 @@ fn validate_github_url(raw: &str) -> Result<String, String> {
     Ok(format!("https://github.com/{owner}/{repo}"))
 }
 
+/// Clone attempts to retry before giving up. GitHub's smart-HTTP endpoint
+/// occasionally answers a well-formed, public-repo request with a truncated
+/// or unauthenticated-looking response (seen from some cloud hosts' egress
+/// IPs); the failure clears on a prompt retry far more often than it
+/// reflects anything wrong with the URL.
+const CLONE_ATTEMPTS: u32 = 3;
+
 async fn clone_repo(url: &str, dest: &Path) -> Result<(), ApiError> {
-    let mut cmd = tokio::process::Command::new("git");
-    cmd.args(["clone", "--depth", "1", "--", url, &dest.to_string_lossy()])
-        // Blocks git's non-http(s) transports (e.g. `ext::`, which can run
-        // arbitrary commands) even if validation above were ever bypassed.
-        .env("GIT_ALLOW_PROTOCOL", "https")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .kill_on_drop(true);
+    let mut last_stderr = String::new();
 
-    let output = tokio::time::timeout(CLONE_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| {
-            bad_request(
-                "cloning the repository timed out",
-                "Cloning that repository timed out. Please try again.",
-            )
-        })?
-        .map_err(|e| server_error(format!("failed to run git: {e}")))?;
+    for attempt in 1..=CLONE_ATTEMPTS {
+        // A prior attempt in this loop may have left a partial clone behind;
+        // `git clone` refuses to reuse a non-empty destination.
+        let _ = tokio::fs::remove_dir_all(dest).await;
+        tokio::fs::create_dir_all(dest)
+            .await
+            .map_err(|e| server_error(format!("failed to recreate temp dir: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(bad_request(
-            format!("git clone failed: {}", stderr.trim()),
-            "Could not clone that repository. Make sure the URL points to a public GitHub repository.",
-        ));
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.args(["clone", "--depth", "1", "--", url, &dest.to_string_lossy()])
+            // Blocks git's non-http(s) transports (e.g. `ext::`, which can run
+            // arbitrary commands) even if validation above were ever bypassed.
+            .env("GIT_ALLOW_PROTOCOL", "https")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .kill_on_drop(true);
+
+        let output = tokio::time::timeout(CLONE_TIMEOUT, cmd.output())
+            .await
+            .map_err(|_| {
+                bad_request(
+                    "cloning the repository timed out",
+                    "Cloning that repository timed out. Please try again.",
+                )
+            })?
+            .map_err(|e| server_error(format!("failed to run git: {e}")))?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        last_stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if attempt < CLONE_ATTEMPTS {
+            tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
+        }
     }
-    Ok(())
+
+    // "terminal prompts disabled" / "expected flush after ref listing" are
+    // git's symptoms of a mangled server response, not of a missing or
+    // private repo -- telling the user to double-check a URL that is
+    // already fine just sends them in circles.
+    let public_message = if last_stderr.contains("terminal prompts disabled")
+        || last_stderr.contains("expected flush after ref listing")
+    {
+        "GitHub couldn't be reached from this server right now. This is usually temporary -- please try again in a moment."
+    } else {
+        "Could not clone that repository. Make sure the URL points to a public GitHub repository."
+    };
+
+    Err(bad_request(
+        format!("git clone failed after {CLONE_ATTEMPTS} attempts: {last_stderr}"),
+        public_message,
+    ))
 }
 
 async fn run_ctxlint(repo_dir: &Path, budgets: &Budgets) -> Result<Value, ApiError> {

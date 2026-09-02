@@ -3,6 +3,7 @@
 //! JSON report to the caller.
 
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use axum::Json;
@@ -14,9 +15,22 @@ use ctxlint::config::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::Semaphore;
 
 const CLONE_TIMEOUT: Duration = Duration::from_secs(60);
 const LINT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Caps how many `git clone` + `ctxlint` subprocess pairs run at once, so a
+/// burst of concurrent requests can't exhaust the instance's CPU, memory, or
+/// file descriptors. A request that arrives once the cap is reached is
+/// rejected immediately (see `LINT_SEMAPHORE` below) rather than queued,
+/// since a queued caller would just wait and then likely hit its own client
+/// timeout anyway.
+const MAX_CONCURRENT_LINTS: usize = 4;
+
+/// Held by every in-flight request from just before `git clone` until the
+/// response is built, so it always covers both subprocesses together.
+static LINT_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(MAX_CONCURRENT_LINTS));
 
 /// Caps a budget well above any real file so a typo in the form cannot turn
 /// into an unbounded number on the command line. Zero stays meaningful: it is
@@ -28,6 +42,8 @@ const GENERIC_ERROR: &str =
 const INVALID_URL_ERROR: &str = "That doesn't look like a valid GitHub repository URL. Expected format: https://github.com/<owner>/<repo>";
 const INVALID_BUDGET_ERROR: &str =
     "Token budgets must be whole numbers from 0 to 1000000 (0 turns that check off).";
+const BUSY_ERROR: &str =
+    "This server is busy linting other repositories right now. Please try again in a moment.";
 
 /// The token budgets a run enforces, named after the flags they become.
 ///
@@ -164,6 +180,9 @@ async fn handle_lint_inner(req: LintRequest) -> Result<Json<Value>, ApiError> {
     req.budgets
         .validate()
         .map_err(|detail| bad_request(detail, INVALID_BUDGET_ERROR))?;
+
+    // Held until this function returns, so it spans both subprocesses below.
+    let _permit = LINT_SEMAPHORE.try_acquire().map_err(|_| too_busy())?;
 
     let dir = tempfile::TempDir::new()
         .map_err(|e| server_error(format!("failed to create temp dir: {e}")))?;
@@ -304,6 +323,14 @@ fn server_error(log_detail: impl Into<String>) -> ApiError {
     }
 }
 
+fn too_busy() -> ApiError {
+    ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        log_detail: format!("lint concurrency cap ({MAX_CONCURRENT_LINTS}) reached"),
+        public_message: BUSY_ERROR,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +411,35 @@ mod tests {
             INVALID_BUDGET_ERROR.contains(&MAX_BUDGET.to_string()),
             "{INVALID_BUDGET_ERROR:?} does not name {MAX_BUDGET}"
         );
+    }
+
+    /// Uses a fresh semaphore rather than the shared `LINT_SEMAPHORE`, so this
+    /// can't interfere with (or be interfered with by) other tests running in
+    /// parallel against the real one.
+    #[test]
+    fn concurrent_lint_cap_rejects_once_exhausted() {
+        let sem = Semaphore::new(MAX_CONCURRENT_LINTS);
+        let permits: Vec<_> = (0..MAX_CONCURRENT_LINTS)
+            .map(|_| sem.try_acquire().expect("permit within the cap"))
+            .collect();
+        assert!(
+            sem.try_acquire().is_err(),
+            "a permit beyond the cap must be rejected, not queued"
+        );
+
+        drop(permits);
+        assert!(
+            sem.try_acquire().is_ok(),
+            "a permit must free up once its holder is dropped"
+        );
+    }
+
+    /// The message names the situation so a caller doesn't mistake it for the
+    /// generic failure -- it names the ceiling only in the log detail
+    /// (`too_busy`), which is exercised via `handle_lint_inner` in practice.
+    #[test]
+    fn the_busy_error_is_distinct_from_the_generic_one() {
+        assert_ne!(BUSY_ERROR, GENERIC_ERROR);
     }
 
     /// The form starts from these, so they are the linter's defaults or the
